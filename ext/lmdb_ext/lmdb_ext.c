@@ -288,7 +288,7 @@ static void environment_check(Environment* environment) {
 static void environment_free(Environment *environment) {
         if (environment->env) {
                 // rb_warn("Memory leak - Garbage collecting open environment");
-                if (!RHASH_EMPTY_P(environment->txn_thread_hash)) {
+                if (environment->txn_count > 0) {
                     // If a transaction (or cursor) is open, its block is on the
                     // stack, so it will not be collected, so environment_free
                     // should not be called.
@@ -523,6 +523,7 @@ static VALUE environment_new(int argc, VALUE *argv, VALUE klass) {
         environment->env = env;
         environment->thread_txn_hash = rb_hash_new();
         environment->txn_thread_hash = rb_hash_new();
+        environment->txn_count = 0;
 
         if (options.maxreaders > 0)
                 check(mdb_env_set_maxreaders(env, options.maxreaders));
@@ -657,6 +658,7 @@ static void environment_set_active_txn(VALUE self, VALUE thread, VALUE txn) {
                         rb_hash_delete(environment->thread_txn_hash, thread);
                         rb_hash_delete(environment->txn_thread_hash, oldtxn);
                 }
+                environment->txn_count++;
         } else {
                 VALUE oldtxn = rb_hash_aref(environment->thread_txn_hash, thread);
                 if (!NIL_P(oldtxn)) {
@@ -664,6 +666,7 @@ static void environment_set_active_txn(VALUE self, VALUE thread, VALUE txn) {
                 }
                 rb_hash_aset(environment->txn_thread_hash, txn, thread);
                 rb_hash_aset(environment->thread_txn_hash, thread, txn);
+                environment->txn_count--;
         }
 }
 

@@ -60,6 +60,7 @@ typedef struct {
         MDB_env* env;
         VALUE    thread_txn_hash;
         VALUE    txn_thread_hash;
+        int      txn_count;
 } Environment;
 
 typedef struct {
