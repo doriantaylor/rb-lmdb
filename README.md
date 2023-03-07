@@ -3,8 +3,7 @@
 [![Gittip donate button](http://img.shields.io/gittip/bevry.png)](https://www.gittip.com/min4d/ "Donate weekly to this project using Gittip")
 [![Flattr this git repo](http://api.flattr.com/button/flattr-badge-large.png)](https://flattr.com/submit/auto?user_id=min4d&url=https://github.com/minad/lmdb&title=LMDB&language=&tags=github&category=software)
 
-Ruby bindings for the amazing OpenLDAP's Lightning Memory-Mapped Database (LMDB)
-http://symas.com/mdb/
+Ruby bindings for the amazing OpenLDAP's [Lightning Memory-Mapped Database (LMDB)](https://www.symas.com/symas-embedded-database-lmdb)
 
 ## Installation
 
