@@ -156,6 +156,7 @@ static VALUE environment_clear_flags(int argc, VALUE* argv, VALUE self);
 static VALUE environment_close(VALUE self);
 static VALUE environment_copy(VALUE self, VALUE path);
 static VALUE environment_database(int argc, VALUE *argv, VALUE self);
+static VALUE environment_databases(VALUE self);
 static VALUE environment_flags(VALUE self);
 static void environment_free(Environment *environment);
 static VALUE environment_info(VALUE self);
