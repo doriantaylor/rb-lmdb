@@ -1,8 +1,5 @@
 # LMDB
 
-[![Gittip donate button](http://img.shields.io/gittip/bevry.png)](https://www.gittip.com/min4d/ "Donate weekly to this project using Gittip")
-[![Flattr this git repo](http://api.flattr.com/button/flattr-badge-large.png)](https://flattr.com/submit/auto?user_id=min4d&url=https://github.com/minad/lmdb&title=LMDB&language=&tags=github&category=software)
-
 Ruby bindings for the amazing [OpenLDAP's Lightning Memory-Mapped Database (LMDB)](https://www.symas.com/lmdb/).
 
 ## Installation
@@ -15,12 +12,9 @@ gem install lmdb
 
 ## Links
 
-* Source: <http://github.com/minad/lmdb>
-* Bugs:   <http://github.com/minad/lmdb/issues>
-* Tests and benchmarks: <http://travis-ci.org/minad/lmdb>
-* API documentation:
-    * Latest Gem: <http://rubydoc.info/gems/lmdb/frames>
-    * GitHub master: <http://rubydoc.info/github/minad/lmdb/master/frames>
+* Source: <http://github.com/doriantaylor/rb-lmdb>
+* Bugs:   <http://github.com/doriantaylor/rb-lmdb/issues>
+* API documentation: <http://rubydoc.info/gems/lmdb/>
 
 ## API
 
@@ -42,12 +36,16 @@ end
 env.close
 ```
 
-If you want to have a simpler interface to LMDB databases please consider using [Moneta](https://github.com/minad/moneta). The Moneta gem provides an LMDB adapter which uses this gem.
+## Moneta
+
+If you want to have a simpler interface to LMDB databases please
+consider using [Moneta](https://github.com/minad/moneta). The Moneta
+gem provides an LMDB adapter which uses this gem.
 
 ## License (MIT)
 
 ```
-Copyright (c) 2013 Daniel Mendler
+Copyright ©2013 Daniel Mendler (later changes ©2025 Dorian Taylor)
 
 Permission is hereby granted, free of charge, to any person obtaining
 a copy of this software and associated documentation files (the
