@@ -100,6 +100,27 @@ describe LMDB do
       subject.flags.should_not include(:nosync)
     end
 
+    describe 'databases' do
+      it 'returns empty list when there are no named databases' do
+        subject.databases.should == []
+      end
+
+      it 'returns list of named databases' do
+        db1 = subject.database 'db1', create: true
+        db2 = subject.database 'db2', create: true
+        subject.databases.should == ['db1', 'db2']
+      end
+
+      it 'returns list of named databases when there are non-database kes in the main db' do
+        main = subject.database
+        main['key'] = 'value'
+        subject.database 'db1', create: true
+        subject.database 'db2', create: true
+
+        subject.databases.should == ['db1', 'db2']
+      end
+    end
+
     describe LMDB::Transaction do
       subject { env }
 

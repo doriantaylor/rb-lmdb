@@ -911,6 +911,53 @@ static VALUE environment_database(int argc, VALUE *argv, VALUE self) {
 }
 
 /**
+ * @overload databases()
+ *   Returns a list of the names of all databases in the environment, or
+ *   an empty list if there are no named databases but only the defaut database.
+ *
+ * @return [Array] The names of all databases in the environment.
+ * @raise [Error] If there is an error opening the main database.
+ */
+static VALUE environment_databases(VALUE self) {
+    ENVIRONMENT(self, environment);
+    if (!active_txn(self))
+        return call_with_transaction(self, self, "databases", 0, 0, MDB_RDONLY);
+
+    MDB_dbi dbi;
+    MDB_cursor *cursor;
+    MDB_txn *txn = need_txn(self);
+    MDB_val key;
+
+    check(mdb_dbi_open(txn, NULL, 0, &dbi));
+    check(mdb_cursor_open(txn, dbi, &cursor));
+
+    VALUE ret = rb_ary_new();
+    while (mdb_cursor_get(cursor, &key, NULL, MDB_NEXT_NODUP) == MDB_SUCCESS) {
+        char *intern_db_name;
+        MDB_dbi db;
+        VALUE db_name;
+        
+        if (memchr(key.mv_data, '\0', key.mv_size))
+            continue;
+
+        intern_db_name = malloc(key.mv_size + 1);
+        memcpy(intern_db_name, key.mv_data, key.mv_size);
+        intern_db_name[key.mv_size] = '\0';
+
+        if (mdb_dbi_open(txn, intern_db_name, 0, &db) == MDB_SUCCESS) {
+            mdb_dbi_close(environment->env, db);
+            db_name = rb_str_new(key.mv_data, key.mv_size);
+            rb_ary_push(ret, db_name);
+        }
+        free(intern_db_name);
+    }
+
+    mdb_cursor_close(cursor);
+
+    return ret;
+}
+
+/**
  * @overload stat
  *   Return useful statistics about a database.
  *   @return [Hash] the statistics
@@ -1616,6 +1663,7 @@ void Init_lmdb_ext() {
         rb_undef_alloc_func(cEnvironment);
         rb_define_singleton_method(cEnvironment, "new", environment_new, -1);
         rb_define_method(cEnvironment, "database", environment_database, -1);
+        rb_define_method(cEnvironment, "databases", environment_databases, 0);
         rb_define_method(cEnvironment, "active_txn", environment_active_txn, 0);
         rb_define_method(cEnvironment, "close", environment_close, 0);
         rb_define_method(cEnvironment, "stat", environment_stat, 0);
