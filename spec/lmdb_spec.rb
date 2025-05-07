@@ -418,5 +418,21 @@ describe LMDB do
         db.put 'hurr', 'durr' unless db.has? 'hurr', 'durr'
       end
     end
+
+    it 'should croak when cursor key is not given a string' do
+      proc do
+        db.cursor do |c|
+          c.set 1
+        end
+      end.should raise_error(ArgumentError)
+    end
+
+    it 'should croak when cursor value is not given a string' do
+      proc do
+        db.cursor do |c|
+          c.set 'hi', 1
+        end
+      end.should raise_error(ArgumentError)
+    end
   end
 end

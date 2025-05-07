@@ -248,7 +248,7 @@ static void stop_txn_begin(void *arg)
 
 /**
  * This is the code that opens transactions. Read-write transactions
- * have to be called outside the GVL because they will block without
+ * have to be called outside the GVL because they will block otherwise.
  *
  *
  * Here is the basic problem with LMDB transactions:
@@ -1360,13 +1360,25 @@ static VALUE cursor_next_range(VALUE self, VALUE upper_bound_key) {
 
          rb_scan_args(argc, argv, "11", &vkey, &vval);
 
+         /*
+           XXX TODO: this was a nasty segfault: the key (and any
+           non-nil value) should be asserted to be strings, but then
+           if the database is `integerkeys` then perhaps we should coerce?
+         */
+
+         if (TYPE(vkey) != T_STRING)
+           rb_raise(rb_eArgError, "key must be a string");
+
          key.mv_size = RSTRING_LEN(vkey);
          key.mv_data = StringValuePtr(vkey);
 
          if (!NIL_P(vval)) {
-                 op = MDB_GET_BOTH;
-                 value.mv_size = RSTRING_LEN(vval);
-                 value.mv_data = StringValuePtr(vval);
+           if (TYPE(vval) != T_STRING)
+             rb_raise(rb_eArgError, "non-nil value must be a string");
+
+           op = MDB_GET_BOTH;
+           value.mv_size = RSTRING_LEN(vval);
+           value.mv_data = StringValuePtr(vval);
          }
 
          ret = mdb_cursor_get(cursor->cur, &key, &value, op);

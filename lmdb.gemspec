@@ -25,5 +25,5 @@ Gem::Specification.new do |s|
   s.add_development_dependency 'rake', '~> 13'
   s.add_development_dependency 'rake-compiler', '~> 1.2'
   s.add_development_dependency 'rspec', '~> 3'
-  s.add_development_dependency 'ruby_memcheck', '~> 2'
+  s.add_development_dependency 'ruby_memcheck', '~> 3'
 end

@@ -122,6 +122,8 @@ module LMDB
       return true if value.nil? or value.to_s == v
       return false unless dupsort?
 
+      # warn "checking dupsort value `#{value.inspect}` (#{value.class})"
+
       ret = false
       # read-only txn was having trouble being nested inside a read-write
       maybe_txn true do
@@ -152,9 +154,11 @@ module LMDB
     # going to do this (djt; 2020-02-10)
     def maybe_txn(readonly, &block)
       if t = env.active_txn
+        # warn "reusing #{t.readonly? ? 'read-only ' : ''}txn #{t.inspect}"
         yield t
       else
         env.transaction !!readonly do |t|
+          # warn "new #{t.readonly? ? 'read-only ' : ''}txn #{t.inspect}"
           yield t
         end
       end
