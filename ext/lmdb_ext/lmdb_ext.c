@@ -1363,7 +1363,8 @@ static VALUE cursor_next_range(VALUE self, VALUE upper_bound_key) {
          /*
            XXX TODO: this was a nasty segfault: the key (and any
            non-nil value) should be asserted to be strings, but then
-           if the database is `integerkeys` then perhaps we should coerce?
+           if the database is `integerkeys` then perhaps we should
+           coerce?
          */
 
          if (TYPE(vkey) != T_STRING)
