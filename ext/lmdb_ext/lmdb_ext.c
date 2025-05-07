@@ -1337,9 +1337,10 @@ static VALUE cursor_next_range(VALUE self, VALUE upper_bound_key) {
         MDB_dbi dbi = mdb_cursor_dbi(cursor->cur);
 
         if (mdb_cmp(txn, dbi, &key, &ub_key) <= 0) {
-            return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size), rb_str_new(value.mv_data, value.mv_size));
+          return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size),
+                              rb_str_new(value.mv_data, value.mv_size));
         } else {
-            return Qnil;
+          retu rn Qnil;
         }
 }
 
@@ -1385,7 +1386,7 @@ static VALUE cursor_next_range(VALUE self, VALUE upper_bound_key) {
          ret = mdb_cursor_get(cursor->cur, &key, &value, op);
 
          if (!NIL_P(vval) && ret == MDB_NOTFOUND)
-                 return Qnil;
+           return Qnil;
 
          check(ret);
 
