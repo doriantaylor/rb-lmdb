@@ -1387,7 +1387,7 @@ static VALUE cursor_next_range(VALUE self, VALUE upper_bound_key) {
           return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size),
                               rb_str_new(value.mv_data, value.mv_size));
         } else {
-          retu rn Qnil;
+          return Qnil;
         }
 }
 
