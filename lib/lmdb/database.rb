@@ -143,6 +143,7 @@ module LMDB
     # @see #put
     #
     # @return [void]
+    #
     def put?(key, value = nil, **options)
       begin
         put key, value, **options

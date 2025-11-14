@@ -40,8 +40,8 @@ describe LMDB do
         env = LMDB::Environment.new(path, nosync: true, mode: 0777,
           maxreaders: 777, mapsize: 111111, maxdbs: 666)
         env.should be_instance_of(described_class)
-        env.info[:maxreaders].should == 777
-        env.info[:mapsize].should == 111111
+        env.info[:maxreaders].should eq(777)
+        env.info[:mapsize].should eq(111111)
         env.flags.should include(:nosync)
         env.close
 
@@ -74,7 +74,7 @@ describe LMDB do
     it 'should set mapsize' do
       size_before = env.info[:mapsize]
       env.mapsize = size_before * 2
-      env.info[:mapsize].should == size_before * 2
+      env.info[:mapsize].should eq(size_before * 2)
     end
 
     it 'should copy' do
@@ -108,7 +108,7 @@ describe LMDB do
       it 'returns list of named databases' do
         db1 = subject.database 'db1', create: true
         db2 = subject.database 'db2', create: true
-        subject.databases.should == ['db1', 'db2']
+        subject.databases.should eq(['db1', 'db2'])
       end
 
       it 'returns list of named databases when there are non-database kes in the main db' do
@@ -117,7 +117,7 @@ describe LMDB do
         subject.database 'db1', create: true
         subject.database 'db2', create: true
 
-        subject.databases.should == ['db1', 'db2']
+        subject.databases.should eq(['db1', 'db2'])
       end
     end
 
@@ -125,71 +125,71 @@ describe LMDB do
       subject { env }
 
       it 'should create transactions' do
-        subject.active_txn.should == nil
+        subject.active_txn.should be_nil
         subject.transaction do |txn|
-          subject.active_txn.should == txn
+          subject.active_txn.should eq(txn)
           txn.should be_instance_of(described_class)
           txn.abort
-          subject.active_txn.should == nil
+          subject.active_txn.should be_nil
         end
-        subject.active_txn.should == nil
+        subject.active_txn.should be_nil
       end
 
       it 'should create read-only transactions' do
-        subject.active_txn.should == nil
+        subject.active_txn.should be_nil
         subject.transaction(true) do |txn|
-          subject.active_txn.should == txn
+          subject.active_txn.should eq(txn)
           txn.should be_instance_of(described_class)
           txn.abort
-          subject.active_txn.should == nil
+          subject.active_txn.should be_nil
         end
-        subject.active_txn.should == nil
+        subject.active_txn.should be_nil
       end
 
       it 'can create child transactions' do
-        subject.active_txn.should == nil
+        subject.active_txn.should be_nil
         env.transaction do |txn|
-          subject.active_txn.should == txn
+          subject.active_txn.should eq(txn)
           env.transaction do |ctxn|
-            subject.active_txn.should == ctxn
+            subject.active_txn.should eq(ctxn)
             ctxn.abort
-            subject.active_txn.should == txn
+            subject.active_txn.should eq(txn)
           end
-          subject.active_txn.should == txn
+          subject.active_txn.should eq(txn)
         end
-        subject.active_txn.should == nil
+        subject.active_txn.should be_nil
       end
 
       it 'should support aborting parent transaction' do
-        subject.active_txn.should == nil
+        subject.active_txn.should be_nil
         env.transaction do |txn|
-          subject.active_txn.should == txn
+          subject.active_txn.should eq(txn)
           env.transaction do |ctxn|
-            subject.active_txn.should == ctxn
+            subject.active_txn.should eq(ctxn)
             db['key'] = 'value'
             txn.abort
-            subject.active_txn.should == nil
+            subject.active_txn.should be_nil
           end
-          subject.active_txn.should == nil
+          subject.active_txn.should be_nil
         end
-        db['key'].should be(nil)
-        subject.active_txn.should == nil
+        db['key'].should be_nil
+        subject.active_txn.should be_nil
       end
 
       it 'should support comitting parent transaction' do
-        subject.active_txn.should == nil
+        subject.active_txn.should be_nil
         env.transaction do |txn|
-          subject.active_txn.should == txn
+          subject.active_txn.should eq(txn)
           env.transaction do |ctxn|
-            subject.active_txn.should == ctxn
+            subject.active_txn.should eq(ctxn)
             db['key'] = 'value'
             txn.commit
-            subject.active_txn.should == nil
+            subject.active_txn.should be_nil
           end
-          subject.active_txn.should == nil
+          subject.active_txn.should be_nil
         end
-        db['key'].should == 'value'
-        subject.active_txn.should == nil
+        db['key'].should eq('value')
+        subject.active_txn.should be_nil
       end
 
       it 'should get environment' do
@@ -197,7 +197,7 @@ describe LMDB do
         env.transaction do |txn|
           env2 = txn.env
         end
-        env2.should == env
+        env2.should eq(env)
       end
     end
   end
@@ -207,8 +207,8 @@ describe LMDB do
 
     it 'should return flags' do
       subject.flags.should be_instance_of(Hash)
-      subject.dupsort?.should == false
-      subject.dupfixed?.should == false
+      subject.dupsort?.should be_falsy
+      subject.dupfixed?.should be_falsy
     end
 
     it 'should support named databases' do
@@ -222,19 +222,22 @@ describe LMDB do
       db1['key'] = '2'
       db2['key'] = '3'
 
-      main['key'].should == '1'
-      db1['key'].should == '2'
-      db2['key'].should == '3'
+      main['key'].should eq(?1)
+      db1['key'].should  eq(?2)
+      db2['key'].should  eq(?3)
     end
 
     it 'should get/put data' do
       subject.get('cat').should be_nil
       subject.put('cat', 'garfield').should be_nil
-      subject.get('cat').should == 'garfield'
+      subject.get('cat').should eq('garfield')
 
       # check for key-value pairs on non-dupsort database
-      subject.has?('cat', 'garfield').should == true
-      subject.has?('cat', 'heathcliff').should == false
+      subject.has?('cat', 'garfield').should be_truthy
+      subject.has?('cat', 'heathcliff').should be_falsy
+
+      subject.put?('dog', 'odie')
+      subject.has?('dog', 'odie').should be_truthy
     end
 
     it 'should delete by key' do
@@ -255,7 +258,7 @@ describe LMDB do
 
     it 'stores key/values in same transaction' do
       db.put('key', 'value').should be_nil
-      db.get('key').should == 'value'
+      db.get('key').should eq('value')
     end
 
     it 'stores key/values in different transactions' do
@@ -268,10 +271,10 @@ describe LMDB do
       end
 
       env.transaction do
-        db.get('key').should == 'value'
-        db.get('key2').should == 'value2'
+        db.get('key').should eq('value')
+        db.get('key2').should eq('value2')
         env.transaction do
-          db.get('key3').should == 'value3'
+          db.get('key3').should eq('value3')
         end
       end
     end
@@ -281,22 +284,22 @@ describe LMDB do
     end
 
     it 'should return size' do
-      db.size.should == 0
+      db.size.should eq(0)
       db.put('key', 'value')
-      db.size.should == 1
+      db.size.should eq(1)
       db.put('key2', 'value2')
-      db.size.should == 2
+      db.size.should eq(2)
     end
 
     it 'should be enumerable' do
       db['k1'] = 'v1'
       db['k2'] = 'v2'
-      db.to_a.should == [['k1', 'v1'], ['k2', 'v2']]
+      db.to_a.should eq([['k1', 'v1'], ['k2', 'v2']])
     end
 
     it 'should have shortcuts' do
       db['key'] = 'value'
-      db['key'].should == 'value'
+      db['key'].should eq('value')
     end
 
     it 'should store binary' do
@@ -304,15 +307,15 @@ describe LMDB do
       bin2 = "\xAAx\BB\xCC2"
       db[bin1] = bin2
       db['key'] = bin2
-      db[bin1].should == bin2
-      db['key'].should == bin2
+      db[bin1].should eq(bin2)
+      db['key'].should eq(bin2)
     end
 
     it 'should get environment' do
       main = env.database
       db1 = env.database('db1', create: true)
-      main.env.should == env
-      db1.env.should == env
+      main.env.should eq(env)
+      db1.env.should eq(env)
     end
 
     it 'should iterate over/list keys' do
@@ -330,38 +333,38 @@ describe LMDB do
 
     it 'should get first key/value' do
       db.cursor do |c|
-        c.first.should == ['key1', 'value1']
+        c.first.should eq(['key1', 'value1'])
       end
     end
 
     it 'should get last key/value' do
       db.cursor do |c|
-        c.last.should == ['key2', 'value2']
+        c.last.should eq(['key2', 'value2'])
       end
     end
 
     it 'should get next key/value' do
       db.cursor do |c|
         c.first
-        c.next.should == ['key2', 'value2']
+        c.next.should eq(['key2', 'value2'])
       end
     end
 
     it 'should seek to key' do
       db.cursor do |c|
-        c.set('key1').should == ['key1', 'value1']
+        c.set('key1').should eq(['key1', 'value1'])
       end
     end
 
     it 'should seek to closest key' do
       db.cursor do |c|
-        c.set_range('key0').should == ['key1', 'value1']
+        c.set_range('key0').should eq(['key1', 'value1'])
       end
     end
 
     it 'should seek to key with nuls' do
       db.cursor do |c|
-        c.set_range('\x00').should == ['key1', 'value1']
+        c.set_range('\x00').should eq(['key1', 'value1'])
       end
     end
 
@@ -369,8 +372,8 @@ describe LMDB do
       db.cursor do |c|
         db.put('key0', 'value0')
         c.first
-        c.next_range('key1').should == ['key1', 'value1']
-        c.next_range('key1').should == nil
+        c.next_range('key1').should eq(['key1', 'value1'])
+        c.next_range('key1').should be_nil
       end
     end
 
@@ -378,35 +381,35 @@ describe LMDB do
       dupdb = env.database 'dupsort', create: true, dupsort: true
 
       # check flag while we're at it
-      dupdb.flags[:dupsort].should == true
-      dupdb.dupsort?.should == true
-      dupdb.dupfixed?.should == false
+      dupdb.flags[:dupsort].should be_truthy
+      dupdb.dupsort?.should be_truthy
+      dupdb.dupfixed?.should be_falsy
 
       # add the no-op keyword to trigger a complaint from ruby 2.7
       dupdb.put 'key1', 'value1', nodupdata: false
       dupdb.put 'key1', 'value2'
       dupdb.put 'key2', 'value3'
       dupdb.cursor do |c|
-        c.set('key1', 'value2').should == ['key1', 'value2']
-        c.set('key1', 'value1').should == ['key1', 'value1']
-        c.set('key1', 'value3').should == nil
+        c.set('key1', 'value2').should eq(['key1', 'value2'])
+        c.set('key1', 'value1').should eq(['key1', 'value1'])
+        c.set('key1', 'value3').should be_nil
       end
 
       # this should do nothing
       dupdb.put?('key1', 'value1', nodupdata: true).should be_nil
 
       # this is basically an extended test of `cursor.set key, val`
-      dupdb.has?('key1', 'value1').should == true
-      dupdb.has?('key1', 'value2').should == true
-      dupdb.has?('key1', 'value0').should == false
+      dupdb.has?('key1', 'value1').should be_truthy
+      dupdb.has?('key1', 'value2').should be_truthy
+      dupdb.has?('key1', 'value0').should be_falsy
 
       # match the contents of key1
-      dupdb.each_value('key1').to_a.sort.should == ['value1', 'value2']
+      dupdb.each_value('key1').to_a.sort.should eq(['value1', 'value2'])
 
       # we should have two entries for key1
-      dupdb.cardinality('key1').should == 2
+      dupdb.cardinality('key1').should eq(2)
 
-      dupdb.each_key.to_a.sort.should == ['key1', 'key2']
+      dupdb.each_key.to_a.sort.should eq(['key1', 'key2'])
 
       # XXX move this or whatever
       env.transaction do |t|
@@ -433,7 +436,7 @@ describe LMDB do
     it 'should get database' do
       db2 = nil
       env.transaction { c = db.cursor; db2 = c.database }
-      db2.should == db
+      db2.should eq(db)
     end
 
     it 'should nest a read-only txn in a read-write' do
