@@ -392,6 +392,8 @@ describe LMDB do
         c.set('key1', 'value3').should == nil
       end
 
+      dupdb.put?('key1', 'value1', nodupdata: true).should be_nil
+
       # this is basically an extended test of `cursor.set key, val`
       dupdb.has?('key1', 'value1').should == true
       dupdb.has?('key1', 'value2').should == true

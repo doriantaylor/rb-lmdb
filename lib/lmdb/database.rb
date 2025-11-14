@@ -84,10 +84,10 @@ module LMDB
       maybe_txn true do
       # env.transaction do
         cursor do |c|
-          method = :set
-          while rec = c.send(method, key)
-            method = :next_range
-            yield rec[1]
+          rec = c.set key
+          while rec
+            yield rec.last
+            rec = c.next_range key
           end
         end
       end
@@ -134,17 +134,51 @@ module LMDB
       ret
     end
 
-    # Delete the key (and optional value pair) if it exists; do not
-    # complain about missing keys.
-    # @param key [#to_s] The key.
-    # @param value [#to_s] The optional value.
-    def delete?(key, value = nil)
-      delete key, value if has? key, value
+    # Conditionally put a value into the database.
+    #
+    # @param key [String] The key of the record
+    # @param value [String] the (optional) value
+    # @param options [Hash] options
+    #
+    # @see #put
+    #
+    # @return [void]
+    def put?(key, value = nil, **options)
+      begin
+        put key, value, **options
+      rescue LMDB::Error::KEYEXIST
+        nil
+      end
     end
 
+    # Delete the key (and optional value pair) if it exists; do not
+    # complain about missing keys.
+    # @param key [#to_s] The key of the record
+    # @param value [#to_s] The optional value
+    #
+    # @see #delete
+    #
+    # @return [void]
+    #
+    def delete?(key, value = nil, **options)
+      begin
+        delete key, value, **options
+      rescue LMDB::Error::NOTFOUND
+        nil
+      end
+    end
+
+    # Return how many records there are in this database.
+    #
     # @return the number of records in this database
     def size
       stat[:entries]
+    end
+
+    #
+    # @return whether the database is empty
+    def empty?
+      stat[:entries] == 0
     end
 
     private

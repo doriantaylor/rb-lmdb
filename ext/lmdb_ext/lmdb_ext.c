@@ -936,7 +936,7 @@ static VALUE environment_databases(VALUE self) {
         char *intern_db_name;
         MDB_dbi db;
         VALUE db_name;
-        
+
         if (memchr(key.mv_data, '\0', key.mv_size))
             continue;
 
