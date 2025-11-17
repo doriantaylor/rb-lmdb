@@ -187,6 +187,10 @@ module LMDB
     # having trouble with read-only transactions embedded in
     # read-write for some reason; can't pin it down to test it yet so
     # going to do this (djt; 2020-02-10)
+    #
+    # 2025-11-14: this miiiigght no longer be necessary?? like as of
+    # whenever i implemented that short-circuiting code
+    #
     def maybe_txn(readonly, &block)
       if t = env.active_txn
         # warn "reusing #{t.readonly? ? 'read-only ' : ''}txn #{t.inspect}"
