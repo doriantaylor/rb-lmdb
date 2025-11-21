@@ -136,8 +136,8 @@ module LMDB
 
     # Conditionally put a value into the database.
     #
-    # @param key [String] The key of the record
-    # @param value [String] the (optional) value
+    # @param key [#to_s] The key of the record
+    # @param value [#to_s, nil] the (optional) value
     # @param options [Hash] options
     #
     # @see #put
@@ -145,8 +145,10 @@ module LMDB
     # @return [void]
     #
     def put?(key, value = nil, **options)
+      flags = {}
+      flags[dupsort? ? :nodupdata : :nooverwrite] = true
       begin
-        put key, value, **options
+        put key, value, **options.merge(flags)
       rescue LMDB::Error::KEYEXIST
         nil
       end
@@ -155,15 +157,15 @@ module LMDB
     # Delete the key (and optional value pair) if it exists; do not
     # complain about missing keys.
     # @param key [#to_s] The key of the record
-    # @param value [#to_s] The optional value
+    # @param value [#to_s, nil] The optional value
     #
     # @see #delete
     #
     # @return [void]
     #
-    def delete?(key, value = nil, **options)
+    def delete?(key, value = nil)
       begin
-        delete key, value, **options
+        delete key, value
       rescue LMDB::Error::NOTFOUND
         nil
       end
