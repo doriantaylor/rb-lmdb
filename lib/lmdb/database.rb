@@ -145,8 +145,7 @@ module LMDB
     # @return [void]
     #
     def put?(key, value = nil, **options)
-      flags = {}
-      flags[dupsort? ? :nodupdata : :nooverwrite] = true
+      flags = { (dupsort? ? :nodupdata : :nooverwrite) => true }
       begin
         put key, value, **options.merge(flags)
       rescue LMDB::Error::KEYEXIST

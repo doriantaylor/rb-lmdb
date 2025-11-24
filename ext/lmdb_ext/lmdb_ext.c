@@ -285,69 +285,87 @@ static void stop_txn_begin(void *arg)
  */
 
 static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flags) {
-    ENVIRONMENT(venv, environment);
+  ENVIRONMENT(venv, environment);
 
-    MDB_txn* txn;
-    TxnArgs txn_args;
+  MDB_txn* txn;
+  TxnArgs txn_args;
 
-    VALUE thread  = rb_thread_current();
-    VALUE vparent = environment_active_txn(venv);
+  VALUE thread  = rb_thread_current();
+  VALUE vparent = environment_active_txn(venv);
 
-    Transaction* tparent = NULL;
-    if (vparent && !NIL_P(vparent))
-        Data_Get_Struct(vparent, Transaction, tparent);
+  //
+  Transaction* tparent = NULL;
+  if (vparent && !NIL_P(vparent))
+    Data_Get_Struct(vparent, Transaction, tparent);
 
+  /*
+   * If the requested transaction is read-only and there is a parent
+   * transaction (whether read-only or not), we need to use the
+   * parent transaction.
+   *
+   * XXX except conceivably you could do a transaction (RO or RW)
+   * that spawns a thread that opens another transaction.
+   *
+   * note we do *NOT* re-begin the parent transaction, nor do we
+   * want to commit it
+   *
+   */
+
+  if (tparent && flags & MDB_RDONLY) {
+    int exception;
+    VALUE ret = rb_protect(fn, NIL_P(arg) ? vparent : arg, &exception);
+    if (exception) {
+      if (vparent == environment_active_txn(venv))
+        transaction_abort(vparent);
+      rb_jump_tag(exception);
+    }
+    return ret;
+  }
+  else {
     // XXX note this is a cursed goto loop that could almost certainly
     // be rewritten as a do-while
- retry:
+  retry:
     txn = NULL;
 
     txn_args.env    = environment->env;
-    txn_args.parent = active_txn(venv);
+    txn_args.parent = active_txn(venv); // this returns an MDB_txn
     txn_args.flags  = flags;
     txn_args.htxn   = &txn;
     txn_args.result = 0;
     txn_args.stop   = 0;
 
-    if (flags & MDB_RDONLY) {
-        if (tparent && tparent->flags & MDB_RDONLY)
-            // this is a no-op: put the same actual transaction in a
-            // different wrapper struct
-            txn = txn_args.parent;
-        else
-            // this will return an error if the parent transaction is
-            // read-write, so we don't need to handle the case explicitly
-            call_txn_begin(&txn_args);
-    }
+    if (flags & MDB_RDONLY)
+      call_txn_begin(&txn_args);
     else {
-        if (tparent) {
-            // first we have to determine if we're on the same thread
-            // as the parent, which in turn must be the same as the
-            // environment's registry for which thread has the
-            // read-write transaction
-            if (thread != tparent->thread ||
-                thread != environment->rw_txn_thread)
-                rb_raise(cError,
-                         "Attempt to nest transaction on a different thread");
+      if (tparent) {
+        // first we have to determine if we're on the same thread
+        // as the parent, which in turn must be the same as the
+        // environment's registry for which thread has the
+        // read-write transaction
+        if (thread != tparent->thread ||
+            thread != environment->rw_txn_thread)
+          rb_raise(cError,
+                   "Attempt to nest transaction on a different thread");
+      }
+
+      // try to acquire the new transaction
+      CALL_WITHOUT_GVL(call_txn_begin, &txn_args, stop_txn_begin, &txn_args);
+
+      if (txn_args.stop || !txn) {
+        // !txn is when rb_thread_call_without_gvl2
+        // returns before calling txn_begin
+        if (txn) {
+          mdb_txn_abort(txn);
+          txn_args.result = 0;
         }
 
-        CALL_WITHOUT_GVL(call_txn_begin, &txn_args, stop_txn_begin, &txn_args);
+        //rb_warn("got here lol");
+        rb_thread_check_ints();
+        goto retry; // in what cases do we get here?
+      }
 
-        if (txn_args.stop || !txn) {
-            // !txn is when rb_thread_call_without_gvl2
-            // returns before calling txn_begin
-            if (txn) {
-                mdb_txn_abort(txn);
-                txn_args.result = 0;
-            }
-
-            //rb_warn("got here lol");
-            rb_thread_check_ints();
-            goto retry; // in what cases do we get here?
-        }
-
-        // set the thread
-        environment->rw_txn_thread = thread;
+      // set the thread
+      environment->rw_txn_thread = thread;
     }
 
     // this will raise unless result is zero
@@ -373,14 +391,15 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
     VALUE ret = rb_protect(fn, NIL_P(arg) ? vtxn : arg, &exception);
 
     if (exception) {
-        // rb_warn("lol got exception");
-        if (vtxn == environment_active_txn(venv))
-            transaction_abort(vtxn);
-        rb_jump_tag(exception);
+      // rb_warn("lol got exception");
+      if (vtxn == environment_active_txn(venv))
+        transaction_abort(vtxn);
+      rb_jump_tag(exception);
     }
     if (vtxn == environment_active_txn(venv))
-        transaction_commit(vtxn);
+      transaction_commit(vtxn);
     return ret;
+  }
 }
 
 static void environment_check(Environment* environment) {
@@ -773,23 +792,24 @@ static void environment_set_active_txn(VALUE self, VALUE thread, VALUE txn) {
         }
 }
 
+static MDB_txn* extract_txn(VALUE vtxn) {
+  if (NIL_P(vtxn)) return NULL;
+  TRANSACTION(vtxn, transaction);
+  if (!transaction->txn) rb_raise(cError, "Transaction is already terminated");
+  if (transaction->thread != rb_thread_current())
+    rb_raise(cError, "Transaction is from another thread");
+  return transaction->txn;
+}
 
 static MDB_txn* active_txn(VALUE self) {
         VALUE vtxn = environment_active_txn(self);
-        if (NIL_P(vtxn))
-                return 0;
-        TRANSACTION(vtxn, transaction);
-        if (!transaction->txn)
-                rb_raise(cError, "Transaction is already terminated");
-        if (transaction->thread != rb_thread_current())
-                rb_raise(cError, "Wrong thread");
-        return transaction->txn;
+        return extract_txn(vtxn);
 }
 
 static MDB_txn* need_txn(VALUE self) {
         MDB_txn* txn = active_txn(self);
-        if (!txn)
-                rb_raise(cError, "No active transaction");
+
+        if (!txn) rb_raise(cError, "No active transaction");
         return txn;
 }
 

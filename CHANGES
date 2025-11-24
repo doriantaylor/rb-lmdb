@@ -1,3 +1,12 @@
+0.7.0
+
+  * Nesting read-only transactions finally works, by making it a noop
+    and using the parent transaction (djt)
+
+0.6.6
+
+  * added `put?` and `delete?` (djt)
+
 0.5.1
 
   * Move read-only operations to read-only transactions (djt)

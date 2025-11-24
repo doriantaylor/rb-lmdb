@@ -104,12 +104,12 @@ typedef struct {
 } EnvironmentOptions;
 
 typedef struct {
-        MDB_env *env;
-        MDB_txn *parent;
-        unsigned int flags;
-        MDB_txn **htxn;
-        int result;
-        int stop;
+  MDB_env *env;
+  MDB_txn *parent;
+  unsigned int flags;
+  MDB_txn **htxn; // not sure why this is a pointer to a pointer
+  int result;
+  int stop;
 } TxnArgs;
 
 static VALUE cEnvironment, cDatabase, cTransaction, cCursor, cError;
