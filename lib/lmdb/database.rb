@@ -146,10 +146,13 @@ module LMDB
     #
     def put?(key, value = nil, **options)
       flags = { (dupsort? ? :nodupdata : :nooverwrite) => true }
-      begin
-        put key, value, **options.merge(flags)
-      rescue LMDB::Error::KEYEXIST
-        nil
+      env.transaction do |txn|
+        begin
+          put key, value, **options.merge(flags)
+        rescue LMDB::Error::KEYEXIST
+          txn.abort
+          nil
+        end
       end
     end
 
@@ -163,10 +166,13 @@ module LMDB
     # @return [void]
     #
     def delete?(key, value = nil)
-      begin
-        delete key, value
-      rescue LMDB::Error::NOTFOUND
-        nil
+      env.transaction do |txn|
+        begin
+          delete key, value
+        rescue LMDB::Error::NOTFOUND
+          txn.abort
+          nil
+        end
       end
     end
 

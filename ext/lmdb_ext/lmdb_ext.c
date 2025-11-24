@@ -137,6 +137,28 @@ static VALUE transaction_is_readonly(VALUE self) {
     return (transaction->flags & MDB_RDONLY) ? Qtrue : Qfalse;
 }
 
+/**
+ * @overload finished?
+ *   @note This predicate is considered *unstable*; do not get used to it.
+ *   @return [false,true] whether the transaction is finished.
+ */
+static VALUE transaction_is_finished(VALUE self) {
+  TRANSACTION(self, transaction);
+  // MDB_TXN_FINISHED
+  return (transaction->flags & 0x01) ? Qtrue : Qfalse;
+}
+
+/**
+ * @overload error?
+ *   @note This predicate is considered *unstable*; do not get used to it.
+ *   @return [false,true] whether the transaction incurred an error.
+ */
+static VALUE transaction_is_error(VALUE self) {
+  TRANSACTION(self, transaction);
+  // MDB_TXN_ERROR
+  return (transaction->flags & 0x02) ? Qtrue : Qfalse;
+}
+
 
 static void transaction_finish(VALUE self, int commit) {
     TRANSACTION(self, transaction);
@@ -312,16 +334,21 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
    */
 
   if (tparent && flags & MDB_RDONLY) {
+    // We are reusing the parent transaction.
+
     int exception;
     VALUE ret = rb_protect(fn, NIL_P(arg) ? vparent : arg, &exception);
+
     if (exception) {
-      if (vparent == environment_active_txn(venv))
-        transaction_abort(vparent);
+      // this is a cargo cult; i just copied it from below
+      if (vparent == environment_active_txn(venv)) transaction_abort(vparent);
       rb_jump_tag(exception);
     }
     return ret;
   }
   else {
+    // We are creating a new transaction.
+
     // XXX note this is a cursed goto loop that could almost certainly
     // be rewritten as a do-while
   retry:
@@ -1802,6 +1829,8 @@ void Init_lmdb_ext() {
         rb_define_method(cTransaction, "abort", transaction_abort, 0);
         rb_define_method(cTransaction, "env", transaction_env, 0);
         rb_define_method(cTransaction, "readonly?", transaction_is_readonly, 0);
+        rb_define_method(cTransaction, "finished?", transaction_is_finished, 0);
+        rb_define_method(cTransaction, "error?", transaction_is_error, 0);
 
         /**
          * Document-class: LMDB::Cursor
