@@ -126,7 +126,7 @@ module LMDB
 
       ret = false
       # read-only txn was having trouble being nested inside a read-write
-      maybe_txn true do
+      maybe_txn(true) do
       # env.transaction true do
       # env.transaction do
         cursor { |c| ret = !!c.set(key, value) }
@@ -145,14 +145,20 @@ module LMDB
     # @return [void]
     #
     def put?(key, value = nil, **options)
+      # early bailout
+      return if value.nil?
+
       flags = { (dupsort? ? :nodupdata : :nooverwrite) => true }
+
       env.transaction do |txn|
-        begin
-          put key, value, **options.merge(flags)
-        rescue LMDB::Error::KEYEXIST
-          txn.abort
-          nil
-        end
+        # begin
+        put(key, value, **options.merge(flags)) unless has?(key, value)
+        # rescue LMDB::Error::KEYEXIST
+        #   # this should never be reached lol
+        #   # warn 'lol'
+        #   txn.abort
+        #   nil
+        # end
       end
     end
 
