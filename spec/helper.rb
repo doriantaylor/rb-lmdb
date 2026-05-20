@@ -1,12 +1,12 @@
 require 'lmdb'
 require 'rspec'
 require 'fileutils'
+require 'tmpdir'
 
 # for valgrind
 at_exit { GC.start }
 
-SPEC_ROOT = File.dirname(__FILE__)
-TEMP_ROOT = File.join(SPEC_ROOT, 'tmp')
+TEMP_ROOT = File.join(Dir.tmpdir, 'lmdb-spec')
 
 module LMDB::SpecHelper
   def mkpath(name = 'env')
