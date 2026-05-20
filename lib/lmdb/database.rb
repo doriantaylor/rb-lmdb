@@ -148,19 +148,13 @@ module LMDB
       flags = { (dupsort? ? :nodupdata : :nooverwrite) => true }
 
       env.transaction do |txn|
-        # begin
         put(key, value, **options.merge(flags)) unless has?(key, value)
-        # rescue LMDB::Error::KEYEXIST
-        #   # this should never be reached lol
-        #   # warn 'lol'
-        #   txn.abort
-        #   nil
-        # end
       end
     end
 
     # Delete the key (and optional value pair) if it exists; do not
     # complain about missing keys.
+    #
     # @param key [#to_s] The key of the record
     # @param value [#to_s, nil] The optional value
     #
@@ -169,14 +163,7 @@ module LMDB
     # @return [void]
     #
     def delete?(key, value = nil)
-      env.transaction do |txn|
-        begin
-          delete key, value
-        rescue LMDB::Error::NOTFOUND
-          txn.abort
-          nil
-        end
-      end
+      env.transaction { |txn| delete(key, value) if has?(key, value) }
     end
 
     # Return how many records there are in this database.
