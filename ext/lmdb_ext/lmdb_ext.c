@@ -268,6 +268,11 @@ static void stop_txn_begin(void *arg)
         txn_args->stop = 1;
 }
 
+// adding the break so we can commit on break
+#ifndef TAG_BREAK
+#define TAG_BREAK 0x2
+#endif
+
 /**
  * This is the code that opens transactions. Read-write transactions
  * have to be called outside the GVL because they will block otherwise.
@@ -336,12 +341,13 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
   if (tparent && flags & MDB_RDONLY) {
     // We are reusing the parent transaction.
 
-    int exception;
+    int exception = 0;
     VALUE ret = rb_protect(fn, NIL_P(arg) ? vparent : arg, &exception);
 
     if (exception) {
-      // this is a cargo cult; i just copied it from below
-      if (vparent == environment_active_txn(venv)) transaction_abort(vparent);
+      // we only abort if there is a bona fide exception, ie not an early break
+      if (vparent == environment_active_txn(venv) && exception != TAG_BREAK)
+        transaction_abort(vparent);
       rb_jump_tag(exception);
     }
     return ret;
@@ -414,17 +420,20 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
     environment_set_active_txn(venv, transaction->thread, vtxn);
 
     // now we run the function in the transaction
-    int exception;
+    int exception = 0;
     VALUE ret = rb_protect(fn, NIL_P(arg) ? vtxn : arg, &exception);
 
     if (exception) {
       // rb_warn("lol got exception");
-      if (vtxn == environment_active_txn(venv))
-        transaction_abort(vtxn);
+      if (vtxn == environment_active_txn(venv)) {
+        exception == TAG_BREAK ?
+          transaction_commit(vtxn) : transaction_abort(vtxn);
+      }
       rb_jump_tag(exception);
     }
-    if (vtxn == environment_active_txn(venv))
-      transaction_commit(vtxn);
+
+    // no-exception behaviour is to commit the transaction
+    if (vtxn == environment_active_txn(venv)) transaction_commit(vtxn);
     return ret;
   }
 }
@@ -846,9 +855,14 @@ static MDB_txn* need_txn(VALUE self) {
  *   transaction.  A transaction commits when it exits the block successfully.
  *   A transaction aborts when it raises an exception or calls
  *   {Transaction#abort}.
+ *
  *   @param [Boolean] readonly This transaction will not perform any
  *      write operations
+ *
  *   @note Transactions can be nested.
+ *   @note do a `break txn.commit` if you want to exit from the block
+ *      early without aborting.
+ *
  *   @yield [txn] The block to be executed with the body of the transaction.
  *   @yieldparam txn [Transaction] An optional transaction argument
  *   @example

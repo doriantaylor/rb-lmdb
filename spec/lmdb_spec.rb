@@ -279,6 +279,15 @@ describe LMDB do
       end
     end
 
+    it 'should not complain when you break out of a transaction' do
+      env.transaction do |txn|
+        db.put 'key4', 'value4'
+        break
+      end
+
+      db.get('key4').should eq('value4')
+    end
+
     it 'should return stat' do
       db.stat.should be_instance_of(Hash)
     end

@@ -126,7 +126,8 @@ module LMDB
 
       ret = false
       # read-only txn was having trouble being nested inside a read-write
-      maybe_txn(true) { cursor { |c| ret = !!c.set(key, value) } }
+      # maybe_txn(true) { cursor { |c| ret = !!c.set(key, value) } }
+      env.transaction(true) { cursor { |c| ret = !!c.set(key, value) } }
 
       ret
     end
