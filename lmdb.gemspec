@@ -16,7 +16,10 @@ Gem::Specification.new do |s|
   s.authors     = ['Daniel Mendler', 'Dorian Taylor']
   s.extensions  = Dir['ext/**/extconf.rb']
 
-  s.files         = `git ls-files --recurse-submodules -- *`.split("\n")
+  #s.files         = `git ls-files --recurse-submodules -- *`.split("\n")
+  s.files = Dir[*%w[lib/**/*.rb ext/**/*.{c,h,rb}
+                    vendor/liblmdb/{mdb.c,midl.c,lmdb.h,midl.h,VERSION}
+                    README.md CHANGES LICENSE lmdb.gemspec Rakefile Gemfile]]
   s.test_files    = `git ls-files -- spec/*`.split("\n")
   s.require_paths = ['lib']
 

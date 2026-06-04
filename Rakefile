@@ -76,3 +76,51 @@ namespace :release do
     abort "#{tag} exists; update version!" unless `git tag -l #{tag}`.empty?
   end
 end
+
+# all this business is to download actual releases of lmdb instead of using
+# git submodules
+
+require 'open-uri'
+require 'json'
+require 'fileutils'
+require 'rubygems/package'
+require 'zlib'
+
+LMDB_VENDOR_DIR = File.expand_path('vendor/liblmdb', __dir__)
+LMDB_NEEDED     = %w[mdb.c midl.c lmdb.h midl.h].freeze
+
+namespace :lmdb do
+  desc 'Fetch the latest LMDB C source into vendor/liblmdb'
+  task :fetch do
+    tags_url = 'https://api.github.com/repos/LMDB/lmdb/tags?per_page=20'
+    headers  = { 'User-Agent' => 'rb-lmdb-gem-fetch' }
+
+    tags = JSON.parse(URI.open(tags_url, headers).read)
+    # warn tags.inspect
+    # Tags are like "LMDB_0_9_32" — pick the highest numeric one
+    tag  = tags
+      .map { |t| t['name'] }
+      .select { |n| n.match?(/\ALMDB_\d+[_.]\d+[_.]\d+\z/) }
+      .max_by { |n| n.scan(/\d+/).map(&:to_i) }
+
+    abort 'Could not determine latest LMDB tag' unless tag
+    puts "Fetching LMDB #{tag}..."
+
+    tarball_url = "https://github.com/LMDB/lmdb/archive/refs/tags/#{tag}.tar.gz"
+    FileUtils.mkdir_p(LMDB_VENDOR_DIR)
+
+    # Stream the tarball, extract only the liblmdb source files we need
+    URI.open(tarball_url, headers) do |gz|
+      Gem::Package::TarReader.new(Zlib::GzipReader.new(gz)).each do |entry|
+        base = File.basename(entry.full_name)
+        next unless entry.file? && LMDB_NEEDED.include?(base)
+        dest = File.join(LMDB_VENDOR_DIR, base)
+        File.write(dest, entry.read)
+        puts "  -> #{dest}"
+      end
+    end
+
+    File.write(File.join(LMDB_VENDOR_DIR, 'VERSION'), "#{tag}\n")
+    puts "Done. LMDB #{tag} vendored in #{LMDB_VENDOR_DIR}."
+  end
+end

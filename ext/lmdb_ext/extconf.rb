@@ -3,17 +3,34 @@ require 'mkmf'
 $CFLAGS << ' -std=c99 -Wall -g '
 $CFLAGS << ' -fdeclspec' if /darwin/.match? RUBY_PLATFORM
 
-# Embed lmdb if we cannot find it
-if enable_config("bundled-lmdb", false) || !(find_header('lmdb.h') && have_library('lmdb', 'mdb_env_create'))
-  lmdbpath = "../../vendor/libraries/liblmdb"
-  $INCFLAGS << " -I$(srcdir)/#{lmdbpath}"
-  $VPATH ||= []
-  $VPATH << "$(srcdir)/#{lmdbpath}"
-  # XXX this is a sketchy, sketchy way to do this
-  $srcs = Dir.glob("#{$srcdir}/{#{lmdbpath}/{mdb,midl}.c,*.c}").map do |n|
-    File.basename(n)
-  end
+dir_config('lmdb')
+
+# --vendor flag: skip system lmdb and always build from vendored source
+vendor_forced = arg_config('--vendor-lmdb', false)
+
+have_system_lmdb = false
+
+unless vendor_forced
+  have_system_lmdb =
+    have_header('lmdb.h') && have_library('lmdb', 'mdb_env_create')
 end
+
+unless have_system_lmdb
+  vendor_dir = File.expand_path('../../vendor/liblmdb', __dir__)
+  abort <<~MSG unless File.exist?(File.join(vendor_dir, 'mdb.c'))
+    Could not find system lmdb and no vendored source found.
+    Run `rake lmdb:fetch` to download the LMDB C source, then retry.
+  MSG
+
+  warn "Building from vendored LMDB source in #{vendor_dir}"
+  $INCFLAGS << " -I#{vendor_dir}"
+  $srcs = Dir[File.join(__dir__, '*.c')] +
+          [File.join(vendor_dir, 'mdb.c'),
+           File.join(vendor_dir, 'midl.c')]
+  $VPATH << vendor_dir
+end
+
+
 
 have_header 'limits.h'
 have_header 'string.h'
