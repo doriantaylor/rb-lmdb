@@ -48,12 +48,34 @@ static void transaction_free(Transaction* transaction) {
     free(transaction);
 }
 
+#ifdef HAVE_RB_GC_MARK_MOVABLE
+static void transaction_mark(Transaction* transaction) {
+    rb_gc_mark_movable(transaction->parent);
+    rb_gc_mark_movable(transaction->child);
+    rb_gc_mark_movable(transaction->env);
+    rb_gc_mark_movable(transaction->cursors);
+}
+
+static void transaction_compact(Transaction* transaction) {
+    transaction->parent  = rb_gc_location(transaction->parent);
+    transaction->child   = rb_gc_location(transaction->child);
+    transaction->env     = rb_gc_location(transaction->env);
+    transaction->cursors = rb_gc_location(transaction->cursors);
+}
+
+static VALUE transaction_compact_m(VALUE self) {
+    TRANSACTION(self, transaction);
+    transaction_compact(transaction);
+    return Qnil;
+}
+#else
 static void transaction_mark(Transaction* transaction) {
     rb_gc_mark(transaction->parent);
     rb_gc_mark(transaction->child);
     rb_gc_mark(transaction->env);
     rb_gc_mark(transaction->cursors);
 }
+#endif
 
 /**
  * Commit a transaction in process.  Any subtransactions of this
@@ -483,10 +505,28 @@ static void environment_free(Environment *environment) {
 }
 
 
+#ifdef HAVE_RB_GC_MARK_MOVABLE
+static void environment_mark(Environment* environment) {
+    rb_gc_mark_movable(environment->thread_txn_hash);
+    rb_gc_mark_movable(environment->txn_thread_hash);
+    rb_gc_mark_movable(environment->rw_txn_thread);
+}
+static void environment_compact(Environment* environment) {
+    environment->thread_txn_hash = rb_gc_location(environment->thread_txn_hash);
+    environment->txn_thread_hash = rb_gc_location(environment->txn_thread_hash);
+    environment->rw_txn_thread = rb_gc_location(environment->rw_txn_thread);
+}
+static VALUE environment_compact_m(VALUE self) {
+    ENVIRONMENT(self, environment);
+    environment_compact(environment);
+    return Qnil;
+}
+#else
 static void environment_mark(Environment* environment) {
         rb_gc_mark(environment->thread_txn_hash);
         rb_gc_mark(environment->txn_thread_hash);
 }
+#endif
 
 /**
  * @overload close
@@ -917,9 +957,21 @@ static VALUE environment_transaction(int argc, VALUE *argv, VALUE self) {
         return with_transaction(self, rb_yield, Qnil, flags);
 }
 
+#ifdef HAVE_RB_GC_MARK_MOVABLE
+static void database_mark(Database* database) {
+    rb_gc_mark_movable(database->env);
+}
+
+static VALUE database_compact_m(VALUE self) {
+    DATABASE(self, database);
+    database->env = rb_gc_location(database->env);
+    return Qnil;
+}
+#else
 static void database_mark(Database* database) {
         rb_gc_mark(database->env);
 }
+#endif
 
 #define METHOD database_flags
 #define FILE "dbi_flags.h"
@@ -1288,9 +1340,25 @@ static void cursor_check(Cursor* cursor) {
                 rb_raise(cError, "Cursor is closed");
 }
 
+#ifdef HAVE_RB_GC_MARK_MOVABLE
 static void cursor_mark(Cursor* cursor) {
-        rb_gc_mark(cursor->db);
+  rb_gc_mark_movable(cursor->db);
 }
+
+static void cursor_compact(Cursor* cursor) {
+  cursor->db = rb_gc_location(cursor->db);
+}
+
+static VALUE cursor_compact_m(VALUE self) {
+  CURSOR(self, cursor);
+  cursor_compact(cursor);
+  return Qnil;
+}
+#else
+static void cursor_mark(Cursor* cursor) {
+  rb_gc_mark(cursor->db);
+}
+#endif
 
 /**
  * @overload close
@@ -1763,6 +1831,9 @@ void Init_lmdb_ext() {
         rb_define_method(cEnvironment, "flags", environment_flags, 0);
         rb_define_method(cEnvironment, "path", environment_path, 0);
         rb_define_method(cEnvironment, "transaction", environment_transaction, -1);
+#ifdef HAVE_RB_GC_MARK_MOVABLE
+        rb_define_method(cEnvironment, "rb_gc_compact", environment_compact_m, 0);
+#endif
 
         /**
          * Document-class: LMDB::Database
@@ -1803,7 +1874,9 @@ void Init_lmdb_ext() {
         rb_define_method(cDatabase, "delete", database_delete, -1);
         rb_define_method(cDatabase, "cursor", database_cursor, 0);
         rb_define_method(cDatabase, "env", database_env, 0);
-
+#ifdef HAVE_RB_GC_MARK_MOVABLE
+        rb_define_method(cDatabase, "rb_gc_compact", database_compact_m, 0);
+#endif
         /**
          * Document-class: LMDB::Transaction
          *
@@ -1870,7 +1943,9 @@ void Init_lmdb_ext() {
         rb_define_method(cTransaction, "readonly?", transaction_is_readonly, 0);
         rb_define_method(cTransaction, "finished?", transaction_is_finished, 0);
         rb_define_method(cTransaction, "error?", transaction_is_error, 0);
-
+#ifdef HAVE_RB_GC_MARK_MOVABLE
+        rb_define_method(cTransaction, "rb_gc_compact", transaction_compact_m, 0);
+#endif
         /**
          * Document-class: LMDB::Cursor
          *
@@ -1913,4 +1988,7 @@ void Init_lmdb_ext() {
         rb_define_method(cCursor, "count", cursor_count, 0);
         rb_define_method(cCursor, "delete", cursor_delete, -1);
         rb_define_method(cCursor, "database", cursor_db, 0);
+#ifdef HAVE_RB_GC_MARK_MOVABLE
+        rb_define_method(cCursor, "rb_gc_compact", cursor_compact_m, 0);
+#endif
 }
