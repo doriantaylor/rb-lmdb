@@ -43,7 +43,7 @@ static void transaction_free(Transaction* transaction) {
         //rb_warn(sprintf("Memory leak: Garbage collecting active transaction %d", id));
         rb_warn("Memory leak: Garbage collecting active transaction");
         // transaction_abort(transaction);
-        // mdb_txn_abort(transaction->txn);
+        mdb_txn_abort(transaction->txn);
     }
     free(transaction);
 }
@@ -339,19 +339,6 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
   if (vparent && !NIL_P(vparent))
     Data_Get_Struct(vparent, Transaction, tparent);
 
-  /*
-   * If the requested transaction is read-only and there is a parent
-   * transaction (whether read-only or not), we need to use the
-   * parent transaction.
-   *
-   * XXX except conceivably you could do a transaction (RO or RW)
-   * that spawns a thread that opens another transaction.
-   *
-   * note we do *NOT* re-begin the parent transaction, nor do we
-   * want to commit it
-   *
-   */
-
   if (tparent && flags & MDB_RDONLY) {
     /* Create a pseudo-transaction wrapping the parent's MDB_txn */
     Transaction* pseudo;
@@ -382,6 +369,7 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
 
     /* mark it dead so transaction_free doesn't try to abort it */
     pseudo->txn = NULL;
+    pseudo->flags |= 0x01; // MDB_TXN_FINISHED
 
     if (exception == TAG_BREAK)
       return ret;  /* break exits the inner block, outer continues */
