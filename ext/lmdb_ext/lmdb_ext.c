@@ -52,7 +52,8 @@ static void transaction_free(Transaction* transaction) {
 static void transaction_mark(Transaction* transaction) {
     rb_gc_mark_movable(transaction->env);
     rb_gc_mark_movable(transaction->parent);
-    rb_gc_mark_movable(transaction->child);
+    if (transaction->child)
+      rb_gc_mark_movable(transaction->child);
     rb_gc_mark_movable(transaction->thread);
     rb_gc_mark_movable(transaction->cursors);
 }
@@ -60,7 +61,8 @@ static void transaction_mark(Transaction* transaction) {
 static void transaction_compact(Transaction* transaction) {
     transaction->env     = rb_gc_location(transaction->env);
     transaction->parent  = rb_gc_location(transaction->parent);
-    transaction->child   = rb_gc_location(transaction->child);
+    if (transaction->child)
+      transaction->child = rb_gc_location(transaction->child);
     transaction->thread  = rb_gc_location(transaction->thread);
     transaction->cursors = rb_gc_location(transaction->cursors);
 }
@@ -375,6 +377,7 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
     pseudo->flags   = tparent->flags | MDB_TXN_PSEUDO;
     pseudo->thread  = rb_thread_current();
     pseudo->cursors = rb_ary_new();
+    // pseudo->child   = Qnil;
 
     /* push it as the active txn so nested calls see it correctly */
     environment_set_active_txn(venv, pseudo->thread, vpseudo);
@@ -404,6 +407,14 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
   }
   else {
     // We are creating a new transaction.
+
+    // clear out any stale thread entries (this stanza is from claude)
+    if (!tparent && environment->rw_txn_thread) {
+      VALUE stale = rb_hash_aref(environment->thread_txn_hash,
+                                 environment->rw_txn_thread);
+      if (NIL_P(stale))
+        environment->rw_txn_thread = (VALUE)NULL;
+    }
 
     // XXX note this is a cursed goto loop that could almost certainly
     // be rewritten as a do-while
@@ -463,6 +474,7 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
     transaction->flags   = flags;
     transaction->thread  = rb_thread_current();
     transaction->cursors = rb_ary_new();
+    // transaction->child   = Qnil;
 
     // set the parent's child to self
     if (tparent) tparent->child = vtxn;
@@ -512,12 +524,14 @@ static void environment_free(Environment *environment) {
 static void environment_mark(Environment* environment) {
     rb_gc_mark_movable(environment->thread_txn_hash);
     rb_gc_mark_movable(environment->txn_thread_hash);
-    rb_gc_mark_movable(environment->rw_txn_thread);
+    if (environment->rw_txn_thread)
+      rb_gc_mark_movable(environment->rw_txn_thread);
 }
 static void environment_compact(Environment* environment) {
     environment->thread_txn_hash = rb_gc_location(environment->thread_txn_hash);
     environment->txn_thread_hash = rb_gc_location(environment->txn_thread_hash);
-    environment->rw_txn_thread = rb_gc_location(environment->rw_txn_thread);
+    if (environment->rw_txn_thread)
+      environment->rw_txn_thread = rb_gc_location(environment->rw_txn_thread);
 }
 static VALUE environment_compact_m(VALUE self) {
     ENVIRONMENT(self, environment);
