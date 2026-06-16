@@ -50,16 +50,18 @@ static void transaction_free(Transaction* transaction) {
 
 #ifdef HAVE_RB_GC_MARK_MOVABLE
 static void transaction_mark(Transaction* transaction) {
+    rb_gc_mark_movable(transaction->env);
     rb_gc_mark_movable(transaction->parent);
     rb_gc_mark_movable(transaction->child);
-    rb_gc_mark_movable(transaction->env);
+    rb_gc_mark_movable(transaction->thread);
     rb_gc_mark_movable(transaction->cursors);
 }
 
 static void transaction_compact(Transaction* transaction) {
+    transaction->env     = rb_gc_location(transaction->env);
     transaction->parent  = rb_gc_location(transaction->parent);
     transaction->child   = rb_gc_location(transaction->child);
-    transaction->env     = rb_gc_location(transaction->env);
+    transaction->thread  = rb_gc_location(transaction->thread);
     transaction->cursors = rb_gc_location(transaction->cursors);
 }
 
@@ -70,9 +72,10 @@ static VALUE transaction_compact_m(VALUE self) {
 }
 #else
 static void transaction_mark(Transaction* transaction) {
+    rb_gc_mark(transaction->env);
     rb_gc_mark(transaction->parent);
     rb_gc_mark(transaction->child);
-    rb_gc_mark(transaction->env);
+    rb_gc_mark(transaction->thread);
     rb_gc_mark(transaction->cursors);
 }
 #endif
@@ -1354,6 +1357,7 @@ static VALUE cursor_compact_m(VALUE self) {
   cursor_compact(cursor);
   return Qnil;
 }
+
 #else
 static void cursor_mark(Cursor* cursor) {
   rb_gc_mark(cursor->db);
