@@ -159,12 +159,25 @@ static VALUE transaction_is_error(VALUE self) {
   return (transaction->flags & 0x02) ? Qtrue : Qfalse;
 }
 
+#ifndef MDB_TXN_PSEUDO
+#define MDB_TXN_PSEUDO 0x10  /* not a real txn; reusing parent */
+#endif
 
 static void transaction_finish(VALUE self, int commit) {
     TRANSACTION(self, transaction);
 
     if (!transaction->txn)
         rb_raise(cError, "Transaction is already terminated");
+
+    /* pseudo-transactions are transparent wrappers around a parent;
+       commit/abort are no-ops since the parent owns the real txn */
+    if (transaction->flags & MDB_TXN_PSEUDO) {
+        transaction->txn = NULL;
+        environment_set_active_txn(transaction->env,
+                                   transaction->thread,
+                                   transaction->parent);
+        return;
+    }
 
     if (transaction->thread != rb_thread_current())
         rb_raise(cError, "The thread closing the transaction "
@@ -273,6 +286,7 @@ static void stop_txn_begin(void *arg)
 #define TAG_BREAK 0x2
 #endif
 
+
 /**
  * This is the code that opens transactions. Read-write transactions
  * have to be called outside the GVL because they will block otherwise.
@@ -339,17 +353,40 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
    */
 
   if (tparent && flags & MDB_RDONLY) {
-    // We are reusing the parent transaction.
+    /* Create a pseudo-transaction wrapping the parent's MDB_txn */
+    Transaction* pseudo;
+    VALUE vpseudo = Data_Make_Struct(cTransaction, Transaction, transaction_mark,
+                                     transaction_free, pseudo);
+    pseudo->parent  = vparent;
+    pseudo->env     = venv;
+    pseudo->txn     = tparent->txn;   /* same underlying MDB_txn */
+    pseudo->flags   = tparent->flags | MDB_TXN_PSEUDO;
+    pseudo->thread  = rb_thread_current();
+    pseudo->cursors = rb_ary_new();
+
+    /* push it as the active txn so nested calls see it correctly */
+    environment_set_active_txn(venv, pseudo->thread, vpseudo);
 
     int exception = 0;
-    VALUE ret = rb_protect(fn, NIL_P(arg) ? vparent : arg, &exception);
+    VALUE ret = rb_protect(fn, NIL_P(arg) ? vpseudo : arg, &exception);
 
-    if (exception) {
-      // we only abort if there is a bona fide exception, ie not an early break
-      if (vparent == environment_active_txn(venv) && exception != TAG_BREAK)
-        transaction_abort(vparent);
+    /* always restore active txn to parent, regardless of outcome */
+    environment_set_active_txn(venv, pseudo->thread, vparent);
+
+    /* close any cursors opened on the pseudo-txn (they're real cursors
+       on the real txn, so we close them but don't abort anything) */
+    long i;
+    for (i = 0; i < RARRAY_LEN(pseudo->cursors); i++)
+      cursor_close(RARRAY_AREF(pseudo->cursors, i));
+    rb_ary_clear(pseudo->cursors);
+
+    /* mark it dead so transaction_free doesn't try to abort it */
+    pseudo->txn = NULL;
+
+    if (exception == TAG_BREAK)
+      return ret;  /* break exits the inner block, outer continues */
+    if (exception)
       rb_jump_tag(exception);
-    }
     return ret;
   }
   else {
