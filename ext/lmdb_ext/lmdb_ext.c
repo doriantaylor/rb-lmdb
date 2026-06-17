@@ -524,6 +524,10 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
             mdb_txn_abort(txn);
             txn_args.result = 0;
           }
+          if (txn_args.result != 0 && txn_args.result != MDB_MAP_RESIZED) {
+            /* a real error, not a GVL interruption — stop retrying */
+            check(txn_args.result);
+          }
           /*
           if (txn_args.result != 0)
             rb_warn("mdb_txn_begin failed: %s (parent=%p, env=%p)",
