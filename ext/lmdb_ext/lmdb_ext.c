@@ -83,7 +83,7 @@ static const rb_data_type_t lmdb_transaction_type = {
     .dsize = NULL,
     .dcompact = transaction_compact, // <-- The absolute antidote to T_NONE crashes
   },
-  .flags = RUBY_TYPED_FREE_IMMEDIATELY
+  .flags = 0
 };
 
 static const rb_data_type_t lmdb_environment_type;
@@ -510,22 +510,38 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
             thread != environment->rw_txn_thread)
           rb_raise(cError,
                    "Attempt to nest transaction on a different thread");
+        // parent already holds the mutex
+        call_txn_begin(&txn_args);
       }
+      else {
+        // try to acquire the new transaction
+        CALL_WITHOUT_GVL(call_txn_begin, &txn_args, stop_txn_begin, &txn_args);
 
-      // try to acquire the new transaction
-      CALL_WITHOUT_GVL(call_txn_begin, &txn_args, stop_txn_begin, &txn_args);
-
-      if (txn_args.stop || !txn) {
-        // !txn is when rb_thread_call_without_gvl2
-        // returns before calling txn_begin
-        if (txn) {
-          mdb_txn_abort(txn);
-          txn_args.result = 0;
+        if (txn_args.stop || !txn) {
+          // !txn is when rb_thread_call_without_gvl2
+          // returns before calling txn_begin
+          if (txn) {
+            mdb_txn_abort(txn);
+            txn_args.result = 0;
+          }
+          /*
+          if (txn_args.result != 0)
+            rb_warn("mdb_txn_begin failed: %s (parent=%p, env=%p)",
+                    mdb_strerror(txn_args.result),
+                    (void*)txn_args.parent,
+                    (void*)txn_args.env);
+          */
+          /* Fully drain pending Ruby interrupts before retrying.
+             In Ruby 3.3, GC.compact sets interrupt flags that stop_txn_begin
+             catches; we must yield completely back to the Ruby scheduler
+             to let the GC (or other threads) complete before re-entering
+             the GVL-less section. */
+          rb_thread_check_ints();
+          rb_thread_schedule();
+          // rb_funcall(rb_mKernel, rb_intern("sleep"), 1, DBL2NUM(0.0));
+          // rb_thread_check_ints(); /* drain again after schedule */
+          goto retry; // in what cases do we get here?
         }
-
-        //rb_warn("got here lol");
-        rb_thread_check_ints();
-        goto retry; // in what cases do we get here?
       }
 
       // set the thread
@@ -1499,7 +1515,7 @@ static const rb_data_type_t lmdb_cursor_type = {
     .dsize = NULL,
     .dcompact = cursor_compact,
   },
-  .flags = RUBY_TYPED_FREE_IMMEDIATELY
+  .flags = 0
 };
 
 /*
