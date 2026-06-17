@@ -50,21 +50,19 @@ static void transaction_free(Transaction* transaction) {
 
 #ifdef HAVE_RB_GC_MARK_MOVABLE
 static void transaction_mark(Transaction* transaction) {
-    rb_gc_mark_movable(transaction->env);
-    rb_gc_mark_movable(transaction->parent);
-    if (transaction->child)
-      rb_gc_mark_movable(transaction->child);
-    rb_gc_mark_movable(transaction->thread);
-    rb_gc_mark_movable(transaction->cursors);
+  GC_MARK_MOVABLE(transaction->env);
+  GC_MARK_MOVABLE(transaction->parent);
+  GC_MARK_MOVABLE(transaction->child);
+  GC_MARK_MOVABLE(transaction->thread);
+  GC_MARK_MOVABLE(transaction->cursors);
 }
 
 static void transaction_compact(Transaction* transaction) {
-    transaction->env     = rb_gc_location(transaction->env);
-    transaction->parent  = rb_gc_location(transaction->parent);
-    if (transaction->child)
-      transaction->child = rb_gc_location(transaction->child);
-    transaction->thread  = rb_gc_location(transaction->thread);
-    transaction->cursors = rb_gc_location(transaction->cursors);
+  GC_LOCATION(transaction->env);
+  GC_LOCATION(transaction->parent);
+  GC_LOCATION(transaction->child);
+  GC_LOCATION(transaction->thread);
+  GC_LOCATION(transaction->cursors);
 }
 
 static VALUE transaction_compact_m(VALUE self) {
@@ -236,7 +234,7 @@ static void transaction_finish(VALUE self, int commit) {
         mdb_txn_abort(transaction->txn);
 
     // eliminate child transactions
-    if (transaction->child) {
+    if (transaction->child && !NIL_P(transaction->child)) {
         p = self; // again this is a VALUE
         Transaction* txn = transaction; // and this is the struct
 
@@ -245,7 +243,7 @@ static void transaction_finish(VALUE self, int commit) {
             p = txn->child;
             // this is TRANSACTION minus the declaration
             Data_Get_Struct(txn->child, Transaction, txn);
-        } while (txn->child);
+        } while (txn->child && !NIL_P(txn->child));
 
         // now we ascend back up
         while (p != self) {
@@ -255,6 +253,12 @@ static void transaction_finish(VALUE self, int commit) {
         }
     }
     transaction->txn = 0;
+
+    // clear the parent's child pointer now that we're done
+    if (transaction->parent && !NIL_P(transaction->parent)) {
+      TRANSACTION(transaction->parent, tpar);
+      tpar->child = Qnil;
+    }
 
     // no more active read-write transaction; unset the registry
     if (!(transaction->flags & MDB_RDONLY) && !transaction->parent) {
@@ -267,24 +271,66 @@ static void transaction_finish(VALUE self, int commit) {
     environment_set_active_txn(transaction->env, transaction->thread,
                                transaction->parent);
 
+    // at the end of transaction_finish, after everything is done:
+    transaction->env     = Qnil;
+    transaction->parent  = Qnil;
+    transaction->child   = Qnil;
+    transaction->thread  = Qnil;
+    transaction->cursors = Qnil;
+
     check(ret);
 }
 
 // Ruby 1.8.7 compatibility
+/*
 #ifndef HAVE_RB_FUNCALL_PASSING_BLOCK
 static VALUE call_with_transaction_helper(VALUE arg) {
         #error "Not implemented"
 }
 #else
 static VALUE call_with_transaction_helper(VALUE arg) {
-        HelperArgs* a = (HelperArgs*)arg;
-        return rb_funcall_passing_block(a->self, rb_intern(a->name), a->argc, a->argv);
+  HelperArgs* a = (HelperArgs*)arg;
+
+  return rb_funcall_passing_block(a->self, rb_intern(a->name), a->argc, a->argv);
 }
 #endif
 
 static VALUE call_with_transaction(VALUE venv, VALUE self, const char* name, int argc, const VALUE* argv, int flags) {
-        HelperArgs arg = { self, name, argc, argv };
-        return with_transaction(venv, call_with_transaction_helper, (VALUE)&arg, flags);
+  HelperArgs arg = { self, name, argc, argv };
+
+  VALUE ret = with_transaction(venv, call_with_transaction_helper, (VALUE)&arg, flags);
+
+  //RB_GC_GUARD(self);
+
+  return ret;
+}
+*/
+
+static VALUE call_with_transaction_helper(VALUE arg) {
+    HelperArgs* a = (HelperArgs*)arg;
+
+    // Pass a->argv cleanly into the standard Ruby caller API
+    return rb_funcall_passing_block(a->self, rb_intern(a->name), a->argc, a->argv);
+}
+
+static VALUE call_with_transaction(VALUE venv, VALUE self, const char* name,
+                                   int argc, const VALUE* argv, int flags) {
+    // 1. Explicitly cast away const when passing to rb_ary_new_from_values
+    VALUE tracked_argv = rb_ary_new_from_values(argc, (VALUE *)argv);
+
+    // 2. Fetch the mutable pointer from the Ruby Array
+    VALUE* safe_argv = RARRAY_PTR(tracked_argv);
+
+    HelperArgs arg = { self, name, argc, safe_argv };
+
+    // 3. (VALUE)&arg passes the struct stack pointer into the runner safely
+    VALUE result = with_transaction(venv, call_with_transaction_helper,
+                                    (VALUE)&arg, flags);
+
+    // 4. Anchor the wrapper array so GC cannot clean it up inside with_transaction
+    RB_GC_GUARD(tracked_argv);
+
+    return result;
 }
 
 static void *call_txn_begin(void *arg) {
@@ -377,7 +423,7 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
     pseudo->flags   = tparent->flags | MDB_TXN_PSEUDO;
     pseudo->thread  = rb_thread_current();
     pseudo->cursors = rb_ary_new();
-    // pseudo->child   = Qnil;
+    pseudo->child   = Qnil;
 
     /* push it as the active txn so nested calls see it correctly */
     environment_set_active_txn(venv, pseudo->thread, vpseudo);
@@ -474,7 +520,7 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
     transaction->flags   = flags;
     transaction->thread  = rb_thread_current();
     transaction->cursors = rb_ary_new();
-    // transaction->child   = Qnil;
+    transaction->child   = Qnil;
 
     // set the parent's child to self
     if (tparent) tparent->child = vtxn;
@@ -522,17 +568,17 @@ static void environment_free(Environment *environment) {
 
 #ifdef HAVE_RB_GC_MARK_MOVABLE
 static void environment_mark(Environment* environment) {
-    rb_gc_mark_movable(environment->thread_txn_hash);
-    rb_gc_mark_movable(environment->txn_thread_hash);
-    if (environment->rw_txn_thread)
-      rb_gc_mark_movable(environment->rw_txn_thread);
+  GC_MARK_MOVABLE(environment->thread_txn_hash);
+  GC_MARK_MOVABLE(environment->txn_thread_hash);
+  GC_MARK_MOVABLE(environment->rw_txn_thread);
 }
+
 static void environment_compact(Environment* environment) {
-    environment->thread_txn_hash = rb_gc_location(environment->thread_txn_hash);
-    environment->txn_thread_hash = rb_gc_location(environment->txn_thread_hash);
-    if (environment->rw_txn_thread)
-      environment->rw_txn_thread = rb_gc_location(environment->rw_txn_thread);
+  GC_LOCATION(environment->thread_txn_hash);
+  GC_LOCATION(environment->txn_thread_hash);
+  GC_LOCATION(environment->rw_txn_thread);
 }
+
 static VALUE environment_compact_m(VALUE self) {
     ENVIRONMENT(self, environment);
     environment_compact(environment);
@@ -765,6 +811,7 @@ static VALUE environment_new(int argc, VALUE *argv, VALUE klass) {
     environment->env = env;
     environment->thread_txn_hash = rb_hash_new();
     environment->txn_thread_hash = rb_hash_new();
+    environment->rw_txn_thread   = (VALUE)NULL;
 
     if (options.maxreaders > 0)
         check(mdb_env_set_maxreaders(env, options.maxreaders));
@@ -976,19 +1023,23 @@ static VALUE environment_transaction(int argc, VALUE *argv, VALUE self) {
 
 #ifdef HAVE_RB_GC_MARK_MOVABLE
 static void database_mark(Database* database) {
-    rb_gc_mark_movable(database->env);
+  GC_MARK_MOVABLE(database->env);
 }
 
 static VALUE database_compact_m(VALUE self) {
-    DATABASE(self, database);
-    database->env = rb_gc_location(database->env);
-    return Qnil;
+  DATABASE(self, database);
+  GC_LOCATION(database->env);
+  return Qnil;
 }
 #else
 static void database_mark(Database* database) {
-        rb_gc_mark(database->env);
+  rb_gc_mark(database->env);
 }
 #endif
+
+static void database_free(Database* database) {
+  free(database);
+}
 
 #define METHOD database_flags
 #define FILE "dbi_flags.h"
@@ -1057,8 +1108,8 @@ static VALUE environment_database(int argc, VALUE *argv, VALUE self) {
                        flags, &dbi));
 
     Database* database;
-    VALUE vdb = Data_Make_Struct(cDatabase, Database, database_mark, free,
-                                 database);
+    VALUE vdb = Data_Make_Struct(cDatabase, Database, database_mark,
+                                 database_free, database);
     database->dbi = dbi;
     database->env = self;
 
@@ -1344,12 +1395,12 @@ static VALUE database_delete(int argc, VALUE *argv, VALUE self) {
 }
 
 static void cursor_free(Cursor* cursor) {
-        if (cursor->cur) {
-                rb_warn("Memory leak - Garbage collecting open cursor");
-                // mdb_cursor_close(cursor->cur);
-        }
+  if (cursor->cur) {
+    rb_warn("Memory leak - Garbage collecting open cursor");
+    mdb_cursor_close(cursor->cur);
+  }
 
-        free(cursor);
+  free(cursor);
 }
 
 static void cursor_check(Cursor* cursor) {
@@ -1359,11 +1410,11 @@ static void cursor_check(Cursor* cursor) {
 
 #ifdef HAVE_RB_GC_MARK_MOVABLE
 static void cursor_mark(Cursor* cursor) {
-  rb_gc_mark_movable(cursor->db);
+  GC_MARK_MOVABLE(cursor->db);
 }
 
 static void cursor_compact(Cursor* cursor) {
-  cursor->db = rb_gc_location(cursor->db);
+  GC_LOCATION(cursor->db);
 }
 
 static VALUE cursor_compact_m(VALUE self) {

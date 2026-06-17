@@ -92,7 +92,7 @@ typedef struct {
         VALUE self;
         const char* name;
         int argc;
-        const VALUE* argv;
+        VALUE* argv;
 } HelperArgs;
 
 typedef struct {
@@ -117,6 +117,14 @@ static VALUE cEnvironment, cDatabase, cTransaction, cCursor, cError;
 #define ERROR(name) static VALUE cError_##name;
 #include "errors.h"
 #undef ERROR
+
+#ifdef HAVE_RB_GC_MARK_MOVABLE
+#define GC_MARK_MOVABLE(val) \
+    do { if ((val) && !NIL_P(val)) rb_gc_mark_movable(val); } while(0)
+
+#define GC_LOCATION(val) \
+    do { if ((val) && !NIL_P(val)) (val) = rb_gc_location(val); } while(0)
+#endif
 
 // BEGIN PROTOTYPES
 void Init_lmdb_ext();
