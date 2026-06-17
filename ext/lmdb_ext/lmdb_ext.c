@@ -306,31 +306,118 @@ static VALUE call_with_transaction(VALUE venv, VALUE self, const char* name, int
 }
 */
 
-static VALUE call_with_transaction_helper(VALUE arg) {
-    HelperArgs* a = (HelperArgs*)arg;
+/* lol gemini
+static VALUE call_with_transaction_helper(VALUE anchor_array) {
+    // 1. Unpack our arguments safely from the native Ruby anchor array
+    VALUE self             = rb_ary_entry(anchor_array, 0);
+    VALUE name             = rb_ary_entry(anchor_array, 1);
+    VALUE passed_arguments = rb_ary_entry(anchor_array, 2);
 
-    // Pass a->argv cleanly into the standard Ruby caller API
-    return rb_funcall_passing_block(a->self, rb_intern(a->name), a->argc, a->argv);
+    // 2. Extract the safe, underlying C array pointer from the inner array
+    int argc = RARRAY_LENINT(passed_arguments);
+    VALUE* argv_ptr = RARRAY_PTR(passed_arguments);
+    
+    // 3. Execute the function passing block. 
+    // Everything is fully visible to Ruby because they are backed by native arrays.
+    return rb_funcall_passing_block(self, SYM2ID(name), argc, argv_ptr);
 }
 
-static VALUE call_with_transaction(VALUE venv, VALUE self, const char* name,
-                                   int argc, const VALUE* argv, int flags) {
-    // 1. Explicitly cast away const when passing to rb_ary_new_from_values
-    VALUE tracked_argv = rb_ary_new_from_values(argc, (VALUE *)argv);
+static VALUE call_with_transaction(VALUE venv, VALUE self, const char* name, int argc, const VALUE* argv, int flags) {
+    // 1. Wrap the arguments in an inner Ruby array to preserve the argv objects natively.
+    VALUE passed_arguments = rb_ary_new_from_values(argc, (VALUE *)argv);
+    
+    // 2. Wrap everything into a single "anchor" array instead of a dangerous custom C struct pointer.
+    // rb_ary_new_from_args takes the exact count of items followed by the items themselves.
+    VALUE anchor_array = rb_ary_new_from_args(3, self, ID2SYM(rb_intern(name)), passed_arguments);
+    
+    // 3. Pass the anchor array into with_transaction. 
+    // If a GC pass occurs inside with_transaction, it safely scans this array 
+    // and keeps self, the name symbol, and all argv elements alive.
+    VALUE result = with_transaction(venv, call_with_transaction_helper, anchor_array, flags);
 
-    // 2. Fetch the mutable pointer from the Ruby Array
-    VALUE* safe_argv = RARRAY_PTR(tracked_argv);
-
-    HelperArgs arg = { self, name, argc, safe_argv };
-
-    // 3. (VALUE)&arg passes the struct stack pointer into the runner safely
-    VALUE result = with_transaction(venv, call_with_transaction_helper,
-                                    (VALUE)&arg, flags);
-
-    // 4. Anchor the wrapper array so GC cannot clean it up inside with_transaction
-    RB_GC_GUARD(tracked_argv);
-
+    // 4. Anchor it to this stack context until the function fully unwinds
+    RB_GC_GUARD(anchor_array); 
+    
     return result;
+}
+*/
+/*
+static VALUE call_with_transaction_helper(VALUE anchor_array) {
+    // 1. Unpack everything safely
+    VALUE self             = rb_ary_entry(anchor_array, 0);
+    VALUE name             = rb_ary_entry(anchor_array, 1);
+    VALUE passed_arguments = rb_ary_entry(anchor_array, 2);
+
+    int argc = RARRAY_LENINT(passed_arguments);
+    VALUE* argv_ptr = RARRAY_PTR(passed_arguments);
+    
+    // 2. Execute the call safely. The block is protected natively 
+    // because it's bundled inside anchor_array which is pinned.
+    return rb_funcall_passing_block(self, SYM2ID(name), argc, argv_ptr);
+}
+
+static VALUE call_with_transaction(VALUE venv, VALUE self, const char* name, int argc, const VALUE* argv, int flags) {
+    // 1. Capture the block currently associated with this call context 
+    // to prevent IT from being swept during the GVL-free phase.
+    VALUE current_block = rb_block_given_p() ? rb_block_proc() : Qnil;
+
+    // 2. Gather arguments into native Ruby arrays
+    VALUE passed_arguments = rb_ary_new_from_values(argc, (VALUE *)argv);
+    
+    // 3. Bundle self, name, arguments, AND the block into the anchor
+    VALUE anchor_array = rb_ary_new_from_args(4, self, ID2SYM(rb_intern(name)), passed_arguments, current_block);
+    
+    // 4. Register the memory address globally so the GC *must* respect it
+    // even when this thread is completely invisible during the GVL drop.
+    VALUE *volatile_pointer = &anchor_array;
+    rb_gc_register_address(volatile_pointer);
+
+    // 5. Run the transaction wrapper safely
+    VALUE result = with_transaction(venv, call_with_transaction_helper, anchor_array, flags);
+
+    // 6. Unregister to prevent memory leaks
+    rb_gc_unregister_address(volatile_pointer);
+    
+    return result;
+}
+*/
+
+static VALUE call_with_transaction_helper(VALUE anchor_array) {
+  VALUE self = rb_ary_entry(anchor_array, 0);
+  VALUE name = rb_ary_entry(anchor_array, 1);
+  VALUE args = rb_ary_entry(anchor_array, 2);
+
+  int    argc = RARRAY_LENINT(args);
+  VALUE* argv = RARRAY_PTR(args);
+
+  return rb_funcall_passing_block(self, SYM2ID(name), argc, argv);
+}
+
+static VALUE call_with_transaction(VALUE venv, VALUE self, const char* name, int argc, const VALUE* argv, int flags) {
+  VALUE current_block = rb_block_given_p() ? rb_block_proc() : Qnil;
+  VALUE passed_arguments = rb_ary_new_from_values(argc, (VALUE *)argv);
+  VALUE anchor_array = rb_ary_new_from_args(4, self, ID2SYM(rb_intern(name)), passed_arguments, current_block);
+
+  // 1. Thread-safety: Fetch or create a shield array scoped to the CURRENT executing thread
+  VALUE current_thread = rb_thread_current();
+  ID shield_key = rb_intern("__lmdb_gc_shield__");
+  VALUE thread_shield = rb_thread_local_aref(current_thread, shield_key);
+
+  if (NIL_P(thread_shield)) {
+    thread_shield = rb_ary_new();
+    rb_thread_local_aset(current_thread, shield_key, thread_shield);
+  }
+
+  // 2. Push our anchor into this thread's private shield
+  rb_ary_push(thread_shield, anchor_array);
+
+  // 3. Execute the transaction wrapper (safely drops GVL)
+  VALUE result = with_transaction(venv, call_with_transaction_helper, anchor_array, flags);
+
+  // 4. Pop it back out safely
+  rb_ary_pop(thread_shield);
+
+  return result;
 }
 
 static void *call_txn_begin(void *arg) {
