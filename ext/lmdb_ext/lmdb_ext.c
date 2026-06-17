@@ -83,7 +83,7 @@ static const rb_data_type_t lmdb_transaction_type = {
     .dsize = NULL,
     .dcompact = transaction_compact, // <-- The absolute antidote to T_NONE crashes
   },
-  .flags = 0 // Safe delayed finalization on the main thread
+  .flags = RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 static const rb_data_type_t lmdb_environment_type;
@@ -1499,7 +1499,7 @@ static const rb_data_type_t lmdb_cursor_type = {
     .dsize = NULL,
     .dcompact = cursor_compact,
   },
-  .flags = 0
+  .flags = RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 /*
