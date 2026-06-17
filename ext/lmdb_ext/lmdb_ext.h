@@ -29,22 +29,22 @@
 #  define RARRAY_AREF(ary,n) (RARRAY_PTR(ary)[n])
 #endif
 
-#define ENVIRONMENT(var, var_env)                       \
-        Environment* var_env;                           \
-        Data_Get_Struct(var, Environment, var_env);     \
+#define ENVIRONMENT(var, type, var_env)                        \
+        Environment* var_env;                                  \
+        TypedData_Get_Struct(var, Environment, type, var_env); \
         environment_check(var_env)
 
-#define DATABASE(var, var_db)                   \
-        Database* var_db;                       \
-        Data_Get_Struct(var, Database, var_db);
+#define DATABASE(var, type, var_db)                  \
+        Database* var_db;                            \
+        TypedData_Get_Struct(var, Database, type, var_db)
 
-#define TRANSACTION(var, var_txn)                       \
+#define TRANSACTION(var, type, var_txn)                 \
         Transaction* var_txn;                           \
-        Data_Get_Struct(var, Transaction, var_txn)
+        TypedData_Get_Struct(var, Transaction, type, var_txn)
 
-#define CURSOR(var, var_cur)                    \
-        Cursor* var_cur;                        \
-        Data_Get_Struct(var, Cursor, var_cur);  \
+#define CURSOR(var, type, var_cur)                   \
+        Cursor* var_cur;                             \
+        TypedData_Get_Struct(var, Cursor, type, var_cur); \
         cursor_check(var_cur)
 
 /*
@@ -137,10 +137,10 @@ static VALUE cursor_close(VALUE self);
 static VALUE cursor_count(VALUE self);
 static VALUE cursor_delete(int argc, VALUE *argv, VALUE self);
 static VALUE cursor_first(VALUE self);
-static void cursor_free(Cursor* cursor);
 static VALUE cursor_get(VALUE self);
 static VALUE cursor_last(VALUE self);
-static void cursor_mark(Cursor* cursor);
+static void cursor_mark(void* ptr);
+static void cursor_free(void* ptr);
 static VALUE cursor_next(int argc, VALUE* argv, VALUE self);
 static VALUE cursor_prev(VALUE self);
 static VALUE cursor_put(int argc, VALUE* argv, VALUE self);
@@ -151,7 +151,8 @@ static VALUE database_cursor(VALUE self);
 static VALUE database_delete(int argc, VALUE *argv, VALUE self);
 static VALUE database_drop(VALUE self);
 static VALUE database_get(VALUE self, VALUE vkey);
-static void database_mark(Database* database);
+static void database_mark(void* ptr);
+static void database_free(void* ptr);
 static VALUE database_put(int argc, VALUE *argv, VALUE self);
 static VALUE database_stat(VALUE self);
 static VALUE database_get_flags(VALUE self);
@@ -166,9 +167,9 @@ static VALUE environment_copy(VALUE self, VALUE path);
 static VALUE environment_database(int argc, VALUE *argv, VALUE self);
 static VALUE environment_databases(VALUE self);
 static VALUE environment_flags(VALUE self);
-static void environment_free(Environment *environment);
+static void environment_mark(void* ptr);
+static void environment_free(void* ptr);
 static VALUE environment_info(VALUE self);
-static void environment_mark(Environment* environment);
 static VALUE environment_new(int argc, VALUE *argv, VALUE klass);
 static int environment_options(VALUE key, VALUE value, EnvironmentOptions* options);
 static VALUE environment_path(VALUE self);
@@ -182,8 +183,8 @@ static VALUE stat2hash(const MDB_stat* stat);
 static VALUE transaction_abort(VALUE self);
 static VALUE transaction_commit(VALUE self);
 static void transaction_finish(VALUE self, int commit);
-static void transaction_free(Transaction* transaction);
-static void transaction_mark(Transaction* transaction);
+static void transaction_mark(void* ptr);
+static void transaction_free(void* ptr);
 static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flags);
 // END PROTOTYPES
 

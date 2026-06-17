@@ -5,7 +5,7 @@
 
 // ruby 2
 #include "ruby/thread.h"
-#define CALL_WITHOUT_GVL(func, data1, ubf, data2) \
+#define CALL_WITHOUT_GVL(func, data1, ubf, data2)       \
   rb_thread_call_without_gvl2(func, data1, ubf, data2)
 
 #else
@@ -13,70 +13,98 @@
 // ruby 193
 // Expose the API from internal.h:
 VALUE rb_thread_call_without_gvl(
-    rb_blocking_function_t *func, void *data1,
-    rb_unblock_function_t *ubf, void *data2);
-#define CALL_WITHOUT_GVL(func, data1, ubf, data2) \
+                                 rb_blocking_function_t *func, void *data1,
+                                 rb_unblock_function_t *ubf, void *data2);
+#define CALL_WITHOUT_GVL(func, data1, ubf, data2)                       \
   rb_thread_call_without_gvl((rb_blocking_function_t *)func, data1, ubf, data2)
 
 #endif
 
 static void check(int code) {
-        if (!code)
-                return;
+  if (!code)
+    return;
 
-        const char* err = mdb_strerror(code);
-        const char* sep = strchr(err, ':');
-        // increment the offset by two in case there is a colon (plus space)
-        if (sep)
-                err = sep + 2;
+  const char* err = mdb_strerror(code);
+  const char* sep = strchr(err, ':');
+  // increment the offset by two in case there is a colon (plus space)
+  if (sep)
+    err = sep + 2;
 
 #define ERROR(name) if (code == MDB_##name) rb_raise(cError_##name, "%s", err);
 #include "errors.h"
 #undef ERROR
 
-        rb_raise(cError, "%s", err); /* fallback */
+  rb_raise(cError, "%s", err); /* fallback */
 }
 
-static void transaction_free(Transaction* transaction) {
+static void transaction_free(void* ptr) {
+  Transaction *transaction = (Transaction *)ptr;
+  if (transaction) {
     if (transaction->txn) {
-        //int id = (int)mdb_txn_id(transaction->txn);
-        //rb_warn(sprintf("Memory leak: Garbage collecting active transaction %d", id));
-        rb_warn("Memory leak: Garbage collecting active transaction");
-        // transaction_abort(transaction);
-        mdb_txn_abort(transaction->txn);
+      //int id = (int)mdb_txn_id(transaction->txn);
+      //rb_warn(sprintf("Memory leak: Garbage collecting active transaction %d", id));
+      rb_warn("Memory leak: Garbage collecting active transaction");
+      // transaction_abort(transaction);
+      mdb_txn_abort(transaction->txn);
     }
-    free(transaction);
+    xfree(transaction);
+  }
 }
 
 #ifdef HAVE_RB_GC_MARK_MOVABLE
-static void transaction_mark(Transaction* transaction) {
-  GC_MARK_MOVABLE(transaction->env);
-  GC_MARK_MOVABLE(transaction->parent);
-  GC_MARK_MOVABLE(transaction->child);
-  GC_MARK_MOVABLE(transaction->thread);
-  GC_MARK_MOVABLE(transaction->cursors);
+static void transaction_mark(void* ptr) {
+  Transaction *transaction = (Transaction *)ptr;
+  if (transaction) {
+    GC_MARK_MOVABLE(transaction->env);
+    GC_MARK_MOVABLE(transaction->parent);
+    GC_MARK_MOVABLE(transaction->child);
+    GC_MARK_MOVABLE(transaction->thread);
+    GC_MARK_MOVABLE(transaction->cursors);
+  }
 }
 
-static void transaction_compact(Transaction* transaction) {
-  GC_LOCATION(transaction->env);
-  GC_LOCATION(transaction->parent);
-  GC_LOCATION(transaction->child);
-  GC_LOCATION(transaction->thread);
-  GC_LOCATION(transaction->cursors);
+static void transaction_compact(void* ptr) {
+  Transaction *transaction = (Transaction *)ptr;
+  if (transaction) {
+    GC_LOCATION(transaction->env);
+    GC_LOCATION(transaction->parent);
+    GC_LOCATION(transaction->child);
+    GC_LOCATION(transaction->thread);
+    GC_LOCATION(transaction->cursors);
+  }
 }
 
-static VALUE transaction_compact_m(VALUE self) {
-    TRANSACTION(self, transaction);
-    transaction_compact(transaction);
-    return Qnil;
-}
+/* Define the modern TypedData specifications */
+static const rb_data_type_t lmdb_transaction_type = {
+  .wrap_struct_name = "LMDB::Transaction",
+  .function = {
+    .dmark = transaction_mark,
+    .dfree = transaction_free, // points to your existing free/abort code
+    .dsize = NULL,
+    .dcompact = transaction_compact, // <-- The absolute antidote to T_NONE crashes
+  },
+  .flags = 0 // Safe delayed finalization on the main thread
+};
+
+static const rb_data_type_t lmdb_environment_type;
+static const rb_data_type_t lmdb_database_type;
+static const rb_data_type_t lmdb_cursor_type;
+
+/*
+  static VALUE transaction_compact_m(VALUE self) {
+  TRANSACTION(self, transaction);
+  transaction_compact(transaction);
+  return Qnil;
+  }
+*/
+
 #else
 static void transaction_mark(Transaction* transaction) {
-    rb_gc_mark(transaction->env);
-    rb_gc_mark(transaction->parent);
-    rb_gc_mark(transaction->child);
-    rb_gc_mark(transaction->thread);
-    rb_gc_mark(transaction->cursors);
+  rb_gc_mark(transaction->env);
+  rb_gc_mark(transaction->parent);
+  rb_gc_mark(transaction->child);
+  rb_gc_mark(transaction->thread);
+  rb_gc_mark(transaction->cursors);
 }
 #endif
 
@@ -106,8 +134,8 @@ static void transaction_mark(Transaction* transaction) {
  *    end
  */
 static VALUE transaction_commit(VALUE self) {
-        transaction_finish(self, 1);
-        return Qnil;
+  transaction_finish(self, 1);
+  return Qnil;
 }
 
 /**
@@ -133,8 +161,8 @@ static VALUE transaction_commit(VALUE self) {
  *    end
  */
 static VALUE transaction_abort(VALUE self) {
-        transaction_finish(self, 0);
-        return Qnil;
+  transaction_finish(self, 0);
+  return Qnil;
 }
 
 /**
@@ -147,8 +175,8 @@ static VALUE transaction_abort(VALUE self) {
  *      end
  */
 static VALUE transaction_env(VALUE self) {
-        TRANSACTION(self, transaction);
-        return transaction->env;
+  TRANSACTION(self, &lmdb_transaction_type, transaction);
+  return transaction->env;
 }
 
 /**
@@ -157,9 +185,9 @@ static VALUE transaction_env(VALUE self) {
  *   @return [false,true] whether the transaction is read-only.
  */
 static VALUE transaction_is_readonly(VALUE self) {
-    TRANSACTION(self, transaction);
-    //MDB_txn* txn = transaction->txn;
-    return (transaction->flags & MDB_RDONLY) ? Qtrue : Qfalse;
+  TRANSACTION(self, &lmdb_transaction_type, transaction);
+  //MDB_txn* txn = transaction->txn;
+  return (transaction->flags & MDB_RDONLY) ? Qtrue : Qfalse;
 }
 
 /**
@@ -168,7 +196,7 @@ static VALUE transaction_is_readonly(VALUE self) {
  *   @return [false,true] whether the transaction is finished.
  */
 static VALUE transaction_is_finished(VALUE self) {
-  TRANSACTION(self, transaction);
+  TRANSACTION(self, &lmdb_transaction_type, transaction);
   // MDB_TXN_FINISHED
   return (transaction->flags & 0x01) ? Qtrue : Qfalse;
 }
@@ -179,7 +207,7 @@ static VALUE transaction_is_finished(VALUE self) {
  *   @return [false,true] whether the transaction incurred an error.
  */
 static VALUE transaction_is_error(VALUE self) {
-  TRANSACTION(self, transaction);
+  TRANSACTION(self, &lmdb_transaction_type, transaction);
   // MDB_TXN_ERROR
   return (transaction->flags & 0x02) ? Qtrue : Qfalse;
 }
@@ -189,198 +217,100 @@ static VALUE transaction_is_error(VALUE self) {
 #endif
 
 static void transaction_finish(VALUE self, int commit) {
-    TRANSACTION(self, transaction);
+  TRANSACTION(self, &lmdb_transaction_type, transaction);
 
-    if (!transaction->txn)
-        rb_raise(cError, "Transaction is already terminated");
+  if (!transaction->txn)
+    rb_raise(cError, "Transaction is already terminated");
 
-    /* pseudo-transactions are transparent wrappers around a parent;
-       commit/abort are no-ops since the parent owns the real txn */
-    if (transaction->flags & MDB_TXN_PSEUDO) {
-        transaction->txn = NULL;
-        environment_set_active_txn(transaction->env,
-                                   transaction->thread,
-                                   transaction->parent);
-        return;
-    }
-
-    if (transaction->thread != rb_thread_current())
-        rb_raise(cError, "The thread closing the transaction "
-                 "is not the one that opened it");
-
-    // ensure the transaction being closed is the active one
-    VALUE p = environment_active_txn(transaction->env);
-    while (!NIL_P(p) && p != self) {
-        TRANSACTION(p, txn);
-        p = txn->parent;
-    }
-    // bail out if the transaction `self` is not the active one
-    if (p != self)
-        rb_raise(cError, "Transaction is not active");
-
-    // now eliminate the cursors
-    long i;
-    for (i=0; i<RARRAY_LEN(transaction->cursors); i++) {
-        VALUE cursor = RARRAY_AREF(transaction->cursors, i);
-        cursor_close(cursor);
-    }
-    rb_ary_clear(transaction->cursors);
-
-    // now actually finish the internal transaction
-    int ret = 0;
-    if (commit)
-        ret = mdb_txn_commit(transaction->txn);
-    else
-        mdb_txn_abort(transaction->txn);
-
-    // eliminate child transactions
-    if (transaction->child && !NIL_P(transaction->child)) {
-        p = self; // again this is a VALUE
-        Transaction* txn = transaction; // and this is the struct
-
-        // descend into deepest child transaction
-        do {
-            p = txn->child;
-            // this is TRANSACTION minus the declaration
-            Data_Get_Struct(txn->child, Transaction, txn);
-        } while (txn->child && !NIL_P(txn->child));
-
-        // now we ascend back up
-        while (p != self) {
-            TRANSACTION(p, txn);
-            txn->txn = 0;
-            p = txn->parent;
-        }
-    }
-    transaction->txn = 0;
-
-    // clear the parent's child pointer now that we're done
-    if (transaction->parent && !NIL_P(transaction->parent)) {
-      TRANSACTION(transaction->parent, tpar);
-      tpar->child = Qnil;
-    }
-
-    // no more active read-write transaction; unset the registry
-    if (!(transaction->flags & MDB_RDONLY) && !transaction->parent) {
-        ENVIRONMENT(transaction->env, env);
-        // maybe this should be Qnil, i dunno
-        env->rw_txn_thread = (VALUE)NULL;
-    }
-
-    // now set the active transaction to the parent, if there is one
-    environment_set_active_txn(transaction->env, transaction->thread,
+  /* pseudo-transactions are transparent wrappers around a parent;
+     commit/abort are no-ops since the parent owns the real txn */
+  if (transaction->flags & MDB_TXN_PSEUDO) {
+    transaction->txn = NULL;
+    environment_set_active_txn(transaction->env,
+                               transaction->thread,
                                transaction->parent);
+    return;
+  }
 
-    // at the end of transaction_finish, after everything is done:
-    transaction->env     = Qnil;
-    transaction->parent  = Qnil;
-    transaction->child   = Qnil;
-    transaction->thread  = Qnil;
-    transaction->cursors = Qnil;
+  if (transaction->thread != rb_thread_current())
+    rb_raise(cError, "The thread closing the transaction "
+             "is not the one that opened it");
 
-    check(ret);
+  // ensure the transaction being closed is the active one
+  VALUE p = environment_active_txn(transaction->env);
+  while (!NIL_P(p) && p != self) {
+    TRANSACTION(p, &lmdb_transaction_type, txn);
+    p = txn->parent;
+  }
+  // bail out if the transaction `self` is not the active one
+  if (p != self)
+    rb_raise(cError, "Transaction is not active");
+
+  // now eliminate the cursors
+  long i;
+  for (i=0; i<RARRAY_LEN(transaction->cursors); i++) {
+    VALUE cursor = RARRAY_AREF(transaction->cursors, i);
+    cursor_close(cursor);
+  }
+  rb_ary_clear(transaction->cursors);
+
+  // now actually finish the internal transaction
+  int ret = 0;
+  if (commit)
+    ret = mdb_txn_commit(transaction->txn);
+  else
+    mdb_txn_abort(transaction->txn);
+
+  // eliminate child transactions
+  if (transaction->child && !NIL_P(transaction->child)) {
+    p = self; // again this is a VALUE
+    Transaction* txn = transaction; // and this is the struct
+
+    // descend into deepest child transaction
+    do {
+      p = txn->child;
+      // this is TRANSACTION minus the declaration
+      TypedData_Get_Struct(txn->child, Transaction,
+                           &lmdb_transaction_type, txn);
+    } while (txn->child && !NIL_P(txn->child));
+
+    // now we ascend back up
+    while (p != self) {
+      TRANSACTION(p, &lmdb_transaction_type, txn);
+      txn->txn = 0;
+      p = txn->parent;
+    }
+  }
+  transaction->txn = 0;
+
+  // clear the parent's child pointer now that we're done
+  if (transaction->parent && !NIL_P(transaction->parent)) {
+    TRANSACTION(transaction->parent, &lmdb_transaction_type, tpar);
+    tpar->child = Qnil;
+  }
+
+  // no more active read-write transaction; unset the registry
+  if (!(transaction->flags & MDB_RDONLY) && !transaction->parent) {
+    ENVIRONMENT(transaction->env, &lmdb_environment_type, env);
+    // maybe this should be Qnil, i dunno
+    env->rw_txn_thread = (VALUE)NULL;
+  }
+
+  // now set the active transaction to the parent, if there is one
+  environment_set_active_txn(transaction->env, transaction->thread,
+                             transaction->parent);
+
+  // at the end of transaction_finish, after everything is done:
+  transaction->env     = Qnil;
+  transaction->parent  = Qnil;
+  transaction->child   = Qnil;
+  transaction->thread  = Qnil;
+  transaction->cursors = Qnil;
+
+  check(ret);
 }
 
-// Ruby 1.8.7 compatibility
-/*
-#ifndef HAVE_RB_FUNCALL_PASSING_BLOCK
-static VALUE call_with_transaction_helper(VALUE arg) {
-        #error "Not implemented"
-}
-#else
-static VALUE call_with_transaction_helper(VALUE arg) {
-  HelperArgs* a = (HelperArgs*)arg;
-
-  return rb_funcall_passing_block(a->self, rb_intern(a->name), a->argc, a->argv);
-}
-#endif
-
-static VALUE call_with_transaction(VALUE venv, VALUE self, const char* name, int argc, const VALUE* argv, int flags) {
-  HelperArgs arg = { self, name, argc, argv };
-
-  VALUE ret = with_transaction(venv, call_with_transaction_helper, (VALUE)&arg, flags);
-
-  //RB_GC_GUARD(self);
-
-  return ret;
-}
-*/
-
-/* lol gemini
-static VALUE call_with_transaction_helper(VALUE anchor_array) {
-    // 1. Unpack our arguments safely from the native Ruby anchor array
-    VALUE self             = rb_ary_entry(anchor_array, 0);
-    VALUE name             = rb_ary_entry(anchor_array, 1);
-    VALUE passed_arguments = rb_ary_entry(anchor_array, 2);
-
-    // 2. Extract the safe, underlying C array pointer from the inner array
-    int argc = RARRAY_LENINT(passed_arguments);
-    VALUE* argv_ptr = RARRAY_PTR(passed_arguments);
-    
-    // 3. Execute the function passing block. 
-    // Everything is fully visible to Ruby because they are backed by native arrays.
-    return rb_funcall_passing_block(self, SYM2ID(name), argc, argv_ptr);
-}
-
-static VALUE call_with_transaction(VALUE venv, VALUE self, const char* name, int argc, const VALUE* argv, int flags) {
-    // 1. Wrap the arguments in an inner Ruby array to preserve the argv objects natively.
-    VALUE passed_arguments = rb_ary_new_from_values(argc, (VALUE *)argv);
-    
-    // 2. Wrap everything into a single "anchor" array instead of a dangerous custom C struct pointer.
-    // rb_ary_new_from_args takes the exact count of items followed by the items themselves.
-    VALUE anchor_array = rb_ary_new_from_args(3, self, ID2SYM(rb_intern(name)), passed_arguments);
-    
-    // 3. Pass the anchor array into with_transaction. 
-    // If a GC pass occurs inside with_transaction, it safely scans this array 
-    // and keeps self, the name symbol, and all argv elements alive.
-    VALUE result = with_transaction(venv, call_with_transaction_helper, anchor_array, flags);
-
-    // 4. Anchor it to this stack context until the function fully unwinds
-    RB_GC_GUARD(anchor_array); 
-    
-    return result;
-}
-*/
-/*
-static VALUE call_with_transaction_helper(VALUE anchor_array) {
-    // 1. Unpack everything safely
-    VALUE self             = rb_ary_entry(anchor_array, 0);
-    VALUE name             = rb_ary_entry(anchor_array, 1);
-    VALUE passed_arguments = rb_ary_entry(anchor_array, 2);
-
-    int argc = RARRAY_LENINT(passed_arguments);
-    VALUE* argv_ptr = RARRAY_PTR(passed_arguments);
-    
-    // 2. Execute the call safely. The block is protected natively 
-    // because it's bundled inside anchor_array which is pinned.
-    return rb_funcall_passing_block(self, SYM2ID(name), argc, argv_ptr);
-}
-
-static VALUE call_with_transaction(VALUE venv, VALUE self, const char* name, int argc, const VALUE* argv, int flags) {
-    // 1. Capture the block currently associated with this call context 
-    // to prevent IT from being swept during the GVL-free phase.
-    VALUE current_block = rb_block_given_p() ? rb_block_proc() : Qnil;
-
-    // 2. Gather arguments into native Ruby arrays
-    VALUE passed_arguments = rb_ary_new_from_values(argc, (VALUE *)argv);
-    
-    // 3. Bundle self, name, arguments, AND the block into the anchor
-    VALUE anchor_array = rb_ary_new_from_args(4, self, ID2SYM(rb_intern(name)), passed_arguments, current_block);
-    
-    // 4. Register the memory address globally so the GC *must* respect it
-    // even when this thread is completely invisible during the GVL drop.
-    VALUE *volatile_pointer = &anchor_array;
-    rb_gc_register_address(volatile_pointer);
-
-    // 5. Run the transaction wrapper safely
-    VALUE result = with_transaction(venv, call_with_transaction_helper, anchor_array, flags);
-
-    // 6. Unregister to prevent memory leaks
-    rb_gc_unregister_address(volatile_pointer);
-    
-    return result;
-}
-*/
+// these two are from gemini
 
 static VALUE call_with_transaction_helper(VALUE anchor_array) {
   VALUE self = rb_ary_entry(anchor_array, 0);
@@ -393,12 +323,15 @@ static VALUE call_with_transaction_helper(VALUE anchor_array) {
   return rb_funcall_passing_block(self, SYM2ID(name), argc, argv);
 }
 
-static VALUE call_with_transaction(VALUE venv, VALUE self, const char* name, int argc, const VALUE* argv, int flags) {
+static VALUE call_with_transaction(VALUE venv, VALUE self, const char* name,
+                                   int argc, const VALUE* argv, int flags) {
   VALUE current_block = rb_block_given_p() ? rb_block_proc() : Qnil;
   VALUE passed_arguments = rb_ary_new_from_values(argc, (VALUE *)argv);
-  VALUE anchor_array = rb_ary_new_from_args(4, self, ID2SYM(rb_intern(name)), passed_arguments, current_block);
+  VALUE anchor_array = rb_ary_new_from_args(4, self, ID2SYM(rb_intern(name)),
+                                            passed_arguments, current_block);
 
-  // 1. Thread-safety: Fetch or create a shield array scoped to the CURRENT executing thread
+  // 1. Thread-safety: Fetch or create a shield array scoped to the
+  // CURRENT executing thread
   VALUE current_thread = rb_thread_current();
   ID shield_key = rb_intern("__lmdb_gc_shield__");
   VALUE thread_shield = rb_thread_local_aref(current_thread, shield_key);
@@ -412,7 +345,8 @@ static VALUE call_with_transaction(VALUE venv, VALUE self, const char* name, int
   rb_ary_push(thread_shield, anchor_array);
 
   // 3. Execute the transaction wrapper (safely drops GVL)
-  VALUE result = with_transaction(venv, call_with_transaction_helper, anchor_array, flags);
+  VALUE result = with_transaction(venv, call_with_transaction_helper,
+                                  anchor_array, flags);
 
   // 4. Pop it back out safely
   rb_ary_pop(thread_shield);
@@ -420,25 +354,27 @@ static VALUE call_with_transaction(VALUE venv, VALUE self, const char* name, int
   return result;
 }
 
+// and now your regularly scheduled program
+
 static void *call_txn_begin(void *arg) {
-        TxnArgs *txn_args = arg;
-        txn_args->result = mdb_txn_begin(txn_args->env,
-          txn_args->parent, txn_args->flags, txn_args->htxn);
-        if (txn_args->result == MDB_MAP_RESIZED) {
-            check(mdb_env_set_mapsize(txn_args->env, 0));
-            txn_args->result = mdb_txn_begin(txn_args->env,
-              txn_args->parent, txn_args->flags, txn_args->htxn);
-        }
-        return (void *)NULL;
+  TxnArgs *txn_args = arg;
+  txn_args->result = mdb_txn_begin(txn_args->env, txn_args->parent,
+                                   txn_args->flags, txn_args->htxn);
+  if (txn_args->result == MDB_MAP_RESIZED) {
+    check(mdb_env_set_mapsize(txn_args->env, 0));
+    txn_args->result = mdb_txn_begin(txn_args->env, txn_args->parent,
+                                     txn_args->flags, txn_args->htxn);
+  }
+  return (void *)NULL;
 }
 
 static void stop_txn_begin(void *arg)
 {
-        TxnArgs *txn_args = arg;
-        // There's no way to stop waiting for mutex:
-        //   http://www.cognitus.net/faq/pthread/pthreadSemiFAQ_6.html
-        // However, we can (and must) release the mutex as soon as we get it:
-        txn_args->stop = 1;
+  TxnArgs *txn_args = arg;
+  // There's no way to stop waiting for mutex:
+  //   http://www.cognitus.net/faq/pthread/pthreadSemiFAQ_6.html
+  // However, we can (and must) release the mutex as soon as we get it:
+  txn_args->stop = 1;
 }
 
 // adding the break so we can commit on break
@@ -486,7 +422,7 @@ static void stop_txn_begin(void *arg)
  */
 
 static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flags) {
-  ENVIRONMENT(venv, environment);
+  ENVIRONMENT(venv, &lmdb_environment_type, environment);
 
   MDB_txn* txn;
   TxnArgs txn_args;
@@ -497,13 +433,14 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
   //
   Transaction* tparent = NULL;
   if (vparent && !NIL_P(vparent))
-    Data_Get_Struct(vparent, Transaction, tparent);
+    TypedData_Get_Struct(vparent, Transaction, &lmdb_transaction_type, tparent);
 
   if (tparent && flags & MDB_RDONLY) {
     /* Create a pseudo-transaction wrapping the parent's MDB_txn */
     Transaction* pseudo;
-    VALUE vpseudo = Data_Make_Struct(cTransaction, Transaction, transaction_mark,
-                                     transaction_free, pseudo);
+    VALUE vpseudo = TypedData_Make_Struct(cTransaction, Transaction,
+                                          &lmdb_transaction_type, pseudo);
+
     pseudo->parent  = vparent;
     pseudo->env     = venv;
     pseudo->txn     = tparent->txn;   /* same underlying MDB_txn */
@@ -599,8 +536,8 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
     check(txn_args.result);
 
     Transaction* transaction;
-    VALUE vtxn = Data_Make_Struct(cTransaction, Transaction, transaction_mark,
-                                  transaction_free, transaction);
+    VALUE vtxn = TypedData_Make_Struct(cTransaction, Transaction,
+                                       &lmdb_transaction_type, transaction);
     transaction->parent  = vparent;
     transaction->env     = venv;
     transaction->txn     = txn;
@@ -634,47 +571,68 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
 }
 
 static void environment_check(Environment* environment) {
-        if (!environment->env)
-                rb_raise(cError, "Environment is closed");
+  if (!environment->env)
+    rb_raise(cError, "Environment is closed");
 }
 
-static void environment_free(Environment *environment) {
-        if (environment->env) {
-                // rb_warn("Memory leak - Garbage collecting open environment");
-                if (!RHASH_EMPTY_P(environment->txn_thread_hash)) {
-                    // If a transaction (or cursor) is open, its block is on the
-                    // stack, so it will not be collected, so environment_free
-                    // should not be called.
-                    rb_warn("Bug: closing environment with open transactions.");
-                }
-                mdb_env_close(environment->env);
-        }
-        free(environment);
+static void environment_free(void* ptr) {
+  Environment *environment = (Environment *)ptr;
+  if (environment->env) {
+    // rb_warn("Memory leak - Garbage collecting open environment");
+    if (!RHASH_EMPTY_P(environment->txn_thread_hash)) {
+      // If a transaction (or cursor) is open, its block is on the
+      // stack, so it will not be collected, so environment_free
+      // should not be called.
+      rb_warn("Bug: closing environment with open transactions.");
+    }
+    mdb_env_close(environment->env);
+  }
+  xfree(environment);
 }
 
 
 #ifdef HAVE_RB_GC_MARK_MOVABLE
-static void environment_mark(Environment* environment) {
-  GC_MARK_MOVABLE(environment->thread_txn_hash);
-  GC_MARK_MOVABLE(environment->txn_thread_hash);
-  GC_MARK_MOVABLE(environment->rw_txn_thread);
+static void environment_mark(void *ptr) {
+  Environment *environment = (Environment *)ptr;
+  if (environment) {
+    GC_MARK_MOVABLE(environment->thread_txn_hash);
+    GC_MARK_MOVABLE(environment->txn_thread_hash);
+    GC_MARK_MOVABLE(environment->rw_txn_thread);
+  }
 }
 
-static void environment_compact(Environment* environment) {
-  GC_LOCATION(environment->thread_txn_hash);
-  GC_LOCATION(environment->txn_thread_hash);
-  GC_LOCATION(environment->rw_txn_thread);
+static void environment_compact(void *ptr) {
+  Environment *environment = (Environment *)ptr;
+  if (environment) {
+    GC_LOCATION(environment->thread_txn_hash);
+    GC_LOCATION(environment->txn_thread_hash);
+    GC_LOCATION(environment->rw_txn_thread);
+  }
 }
 
-static VALUE environment_compact_m(VALUE self) {
-    ENVIRONMENT(self, environment);
-    environment_compact(environment);
-    return Qnil;
-}
+/* Define the modern TypedData specifications */
+static const rb_data_type_t lmdb_environment_type = {
+  .wrap_struct_name = "LMDB::Environment",
+  .function = {
+    .dmark = environment_mark,
+    .dfree = environment_free,
+    .dsize = NULL,
+    .dcompact = environment_compact,
+  },
+  .flags = 0
+};
+
+/*
+  static VALUE environment_compact_m(VALUE self) {
+  ENVIRONMENT(self, environment);
+  environment_compact(environment);
+  return Qnil;
+  }
+*/
 #else
 static void environment_mark(Environment* environment) {
-        rb_gc_mark(environment->thread_txn_hash);
-        rb_gc_mark(environment->txn_thread_hash);
+  rb_gc_mark(environment->thread_txn_hash);
+  rb_gc_mark(environment->txn_thread_hash);
 }
 #endif
 
@@ -688,35 +646,35 @@ static void environment_mark(Environment* environment) {
  *      env.close
  */
 static VALUE environment_close(VALUE self) {
-        ENVIRONMENT(self, environment);
-        mdb_env_close(environment->env);
-        environment->env = 0;
-        return Qnil;
+  ENVIRONMENT(self, &lmdb_environment_type, environment);
+  mdb_env_close(environment->env);
+  environment->env = 0;
+  return Qnil;
 }
 
 static VALUE stat2hash(const MDB_stat* stat) {
-        VALUE ret = rb_hash_new();
+  VALUE ret = rb_hash_new();
 
 #define STAT_SET(name) rb_hash_aset(ret, ID2SYM(rb_intern(#name)), INT2NUM(stat->ms_##name))
-        STAT_SET(psize);
-        STAT_SET(depth);
-        STAT_SET(branch_pages);
-        STAT_SET(leaf_pages);
-        STAT_SET(overflow_pages);
-        STAT_SET(entries);
+  STAT_SET(psize);
+  STAT_SET(depth);
+  STAT_SET(branch_pages);
+  STAT_SET(leaf_pages);
+  STAT_SET(overflow_pages);
+  STAT_SET(entries);
 #undef STAT_SET
 
-        return ret;
+  return ret;
 }
 
 static VALUE flags2hash(int flags) {
-        VALUE ret = rb_hash_new();
+  VALUE ret = rb_hash_new();
 
 #define FLAG(const, name) rb_hash_aset(ret, ID2SYM(rb_intern(#name)), (flags & MDB_##const) == 0 ? Qfalse : Qtrue);
 #include "dbi_flags.h"
 #undef FLAG
 
-        return ret;
+  return ret;
 }
 
 /**
@@ -731,10 +689,10 @@ static VALUE flags2hash(int flags) {
  *   * +:entries+ Number of data items
  */
 static VALUE environment_stat(VALUE self) {
-        ENVIRONMENT(self, environment);
-        MDB_stat stat;
-        check(mdb_env_stat(environment->env, &stat));
-        return stat2hash(&stat);
+  ENVIRONMENT(self, &lmdb_environment_type, environment);
+  MDB_stat stat;
+  check(mdb_env_stat(environment->env, &stat));
+  return stat2hash(&stat);
 }
 
 /**
@@ -749,23 +707,23 @@ static VALUE environment_stat(VALUE self) {
  *   * +:numreaders+ Max readers slots in the environment
  */
 static VALUE environment_info(VALUE self) {
-        MDB_envinfo info;
+  MDB_envinfo info;
 
-        ENVIRONMENT(self, environment);
-        check(mdb_env_info(environment->env, &info));
+  ENVIRONMENT(self, &lmdb_environment_type, environment);
+  check(mdb_env_info(environment->env, &info));
 
-        VALUE ret = rb_hash_new();
+  VALUE ret = rb_hash_new();
 
 #define INFO_SET(name) rb_hash_aset(ret, ID2SYM(rb_intern(#name)), SIZET2NUM((size_t)info.me_##name));
-        INFO_SET(mapaddr);
-        INFO_SET(mapsize);
-        INFO_SET(last_pgno);
-        INFO_SET(last_txnid);
-        INFO_SET(maxreaders);
-        INFO_SET(numreaders);
+  INFO_SET(mapaddr);
+  INFO_SET(mapsize);
+  INFO_SET(last_pgno);
+  INFO_SET(last_txnid);
+  INFO_SET(maxreaders);
+  INFO_SET(numreaders);
 #undef INFO_SET
 
-        return ret;
+  return ret;
 }
 
 /**
@@ -781,10 +739,10 @@ static VALUE environment_info(VALUE self) {
  *   @raise [Error] when there is an error creating the copy.
  */
 static VALUE environment_copy(VALUE self, VALUE path) {
-        ENVIRONMENT(self, environment);
-        VALUE expanded_path = rb_file_expand_path(path, Qnil);
-        check(mdb_env_copy(environment->env, StringValueCStr(expanded_path)));
-        return Qnil;
+  ENVIRONMENT(self, &lmdb_environment_type, environment);
+  VALUE expanded_path = rb_file_expand_path(path, Qnil);
+  check(mdb_env_copy(environment->env, StringValueCStr(expanded_path)));
+  return Qnil;
 }
 
 /**
@@ -801,37 +759,37 @@ static VALUE environment_copy(VALUE self, VALUE path) {
  *     asynchronous.
  */
 static VALUE environment_sync(int argc, VALUE *argv, VALUE self) {
-        ENVIRONMENT(self, environment);
+  ENVIRONMENT(self, &lmdb_environment_type, environment);
 
-        VALUE force;
-        rb_scan_args(argc, argv, "01", &force);
+  VALUE force;
+  rb_scan_args(argc, argv, "01", &force);
 
-        check(mdb_env_sync(environment->env, RTEST(force)));
-        return Qnil;
+  check(mdb_env_sync(environment->env, RTEST(force)));
+  return Qnil;
 }
 
 static int environment_options(VALUE key, VALUE value, EnvironmentOptions* options) {
-        ID id = rb_to_id(key);
+  ID id = rb_to_id(key);
 
-        if (id == rb_intern("mode"))
-                options->mode = NUM2INT(value);
-        else if (id == rb_intern("maxreaders"))
-                options->maxreaders = NUM2INT(value);
-        else if (id == rb_intern("maxdbs"))
-                options->maxdbs = NUM2INT(value);
-        else if (id == rb_intern("mapsize"))
-                options->mapsize = NUM2SSIZET(value);
+  if (id == rb_intern("mode"))
+    options->mode = NUM2INT(value);
+  else if (id == rb_intern("maxreaders"))
+    options->maxreaders = NUM2INT(value);
+  else if (id == rb_intern("maxdbs"))
+    options->maxdbs = NUM2INT(value);
+  else if (id == rb_intern("mapsize"))
+    options->mapsize = NUM2SSIZET(value);
 
 #define FLAG(const, name) else if (id == rb_intern(#name)) { if (RTEST(value)) { options->flags |= MDB_##const; } }
 #include "env_flags.h"
 #undef FLAG
 
-        else {
-                VALUE s = rb_inspect(key);
-                rb_raise(cError, "Invalid option %s", StringValueCStr(s));
-        }
+  else {
+    VALUE s = rb_inspect(key);
+    rb_raise(cError, "Invalid option %s", StringValueCStr(s));
+  }
 
-        return 0;
+  return 0;
 }
 
 /**
@@ -869,51 +827,51 @@ static int environment_options(VALUE key, VALUE value, EnvironmentOptions* optio
  *      end
  */
 static VALUE environment_new(int argc, VALUE *argv, VALUE klass) {
-    VALUE path, option_hash;
+  VALUE path, option_hash;
 
 #ifdef RB_SCAN_ARGS_KEYWORDS
-    rb_scan_args_kw(RB_SCAN_ARGS_LAST_HASH_KEYWORDS,
-                    argc, argv, "1:", &path, &option_hash);
+  rb_scan_args_kw(RB_SCAN_ARGS_LAST_HASH_KEYWORDS,
+                  argc, argv, "1:", &path, &option_hash);
 #else
-    rb_scan_args(argc, argv, "1:", &path, &option_hash);
+  rb_scan_args(argc, argv, "1:", &path, &option_hash);
 #endif
 
-    EnvironmentOptions options = {
-        .flags = MDB_NOTLS,
-        .maxreaders = -1,
-        .maxdbs = 128,
-        .mapsize = 0,
-        .mode = 0755,
-    };
-    if (!NIL_P(option_hash))
-        rb_hash_foreach(option_hash, (int (*)(ANYARGS))environment_options,
-                        (VALUE)&options);
+  EnvironmentOptions options = {
+    .flags = MDB_NOTLS,
+    .maxreaders = -1,
+    .maxdbs = 128,
+    .mapsize = 0,
+    .mode = 0755,
+  };
+  if (!NIL_P(option_hash))
+    rb_hash_foreach(option_hash, (int (*)(ANYARGS))environment_options,
+                    (VALUE)&options);
 
-    MDB_env* env;
-    check(mdb_env_create(&env));
+  MDB_env* env;
+  check(mdb_env_create(&env));
 
-    Environment* environment;
-    VALUE venv = Data_Make_Struct(cEnvironment, Environment, environment_mark,
-                                  environment_free, environment);
-    environment->env = env;
-    environment->thread_txn_hash = rb_hash_new();
-    environment->txn_thread_hash = rb_hash_new();
-    environment->rw_txn_thread   = (VALUE)NULL;
+  Environment* environment;
+  VALUE venv = TypedData_Make_Struct(cEnvironment, Environment,
+                                     &lmdb_environment_type, environment);
+  environment->env = env;
+  environment->thread_txn_hash = rb_hash_new();
+  environment->txn_thread_hash = rb_hash_new();
+  environment->rw_txn_thread   = (VALUE)NULL;
 
-    if (options.maxreaders > 0)
-        check(mdb_env_set_maxreaders(env, options.maxreaders));
-    if (options.mapsize > 0)
-        check(mdb_env_set_mapsize(env, options.mapsize));
+  if (options.maxreaders > 0)
+    check(mdb_env_set_maxreaders(env, options.maxreaders));
+  if (options.mapsize > 0)
+    check(mdb_env_set_mapsize(env, options.mapsize));
 
-    check(mdb_env_set_maxdbs(env, options.maxdbs <= 0 ? 1 : options.maxdbs));
-    VALUE expanded_path = rb_file_expand_path(path, Qnil);
-    check(mdb_env_open(env, StringValueCStr(expanded_path), options.flags,
-                       options.mode));
+  check(mdb_env_set_maxdbs(env, options.maxdbs <= 0 ? 1 : options.maxdbs));
+  VALUE expanded_path = rb_file_expand_path(path, Qnil);
+  check(mdb_env_open(env, StringValueCStr(expanded_path), options.flags,
+                     options.mode));
 
-    if (rb_block_given_p())
-        return rb_ensure(rb_yield, venv, environment_close, venv);
+  if (rb_block_given_p())
+    return rb_ensure(rb_yield, venv, environment_close, venv);
 
-    return venv;
+  return venv;
 }
 
 /**
@@ -934,16 +892,16 @@ static VALUE environment_new(int argc, VALUE *argv, VALUE klass) {
  *       env.flags           #=> [:writemap, :nometasync]
  */
 static VALUE environment_flags(VALUE self) {
-        unsigned int flags;
-        ENVIRONMENT(self, environment);
-        check(mdb_env_get_flags(environment->env, &flags));
+  unsigned int flags;
+  ENVIRONMENT(self, &lmdb_environment_type, environment);
+  check(mdb_env_get_flags(environment->env, &flags));
 
-        VALUE ret = rb_ary_new();
+  VALUE ret = rb_ary_new();
 #define FLAG(const, name) if (flags & MDB_##const) rb_ary_push(ret, ID2SYM(rb_intern(#name)));
 #include "env_flags.h"
 #undef FLAG
 
-        return ret;
+  return ret;
 }
 
 /**
@@ -952,33 +910,33 @@ static VALUE environment_flags(VALUE self) {
  *   @return [String] the path that was used to open the environment.
  */
 static VALUE environment_path(VALUE self) {
-        const char* path;
-        ENVIRONMENT(self, environment);
-        check(mdb_env_get_path(environment->env, &path));
-        return rb_str_new2(path);
+  const char* path;
+  ENVIRONMENT(self, &lmdb_environment_type, environment);
+  check(mdb_env_get_path(environment->env, &path));
+  return rb_str_new2(path);
 }
 
 static VALUE environment_set_mapsize(VALUE self, VALUE size) {
-        ENVIRONMENT(self, environment);
-        check(mdb_env_set_mapsize(environment->env, NUM2LONG(size)));
-        return Qnil;
+  ENVIRONMENT(self, &lmdb_environment_type, environment);
+  check(mdb_env_set_mapsize(environment->env, NUM2LONG(size)));
+  return Qnil;
 }
 
 static VALUE environment_change_flags(int argc, VALUE* argv, VALUE self, int set) {
-        ENVIRONMENT(self, environment);
+  ENVIRONMENT(self, &lmdb_environment_type, environment);
 
-        int i;
-        for (i = 0; i < argc; ++i) {
-                ID id = rb_to_id(argv[i]);
+  int i;
+  for (i = 0; i < argc; ++i) {
+    ID id = rb_to_id(argv[i]);
 
-                if (0) {}
+    if (0) {}
 #define FLAG(const, name) else if (id == rb_intern(#name)) check(mdb_env_set_flags(environment->env, MDB_##const, set));
 #include "env_flags.h"
 #undef FLAG
-                else
-                        rb_raise(cError, "Invalid option %s", StringValueCStr(argv[i]));
-        }
-        return Qnil;
+    else
+      rb_raise(cError, "Invalid option %s", StringValueCStr(argv[i]));
+  }
+  return Qnil;
 }
 
 /**
@@ -992,8 +950,8 @@ static VALUE environment_change_flags(int argc, VALUE* argv, VALUE self, int set
  *    env.set_flags :nosync, :writemap
  */
 static VALUE environment_set_flags(int argc, VALUE* argv, VALUE self) {
-        environment_change_flags(argc, argv, self, 1);
-        return Qnil;
+  environment_change_flags(argc, argv, self, 1);
+  return Qnil;
 }
 
 /**
@@ -1007,8 +965,8 @@ static VALUE environment_set_flags(int argc, VALUE* argv, VALUE self) {
  *     env.clear_flags :nosync, :writemap
  */
 static VALUE environment_clear_flags(int argc, VALUE* argv, VALUE self) {
-        environment_change_flags(argc, argv, self, 0);
-        return Qnil;
+  environment_change_flags(argc, argv, self, 0);
+  return Qnil;
 }
 
 /**
@@ -1021,32 +979,32 @@ static VALUE environment_clear_flags(int argc, VALUE* argv, VALUE self) {
  *      end
  */
 static VALUE environment_active_txn(VALUE self) {
-        ENVIRONMENT(self, environment);
-        return rb_hash_aref(environment->thread_txn_hash, rb_thread_current());
+  ENVIRONMENT(self, &lmdb_environment_type, environment);
+  return rb_hash_aref(environment->thread_txn_hash, rb_thread_current());
 }
 
 static void environment_set_active_txn(VALUE self, VALUE thread, VALUE txn) {
-        ENVIRONMENT(self, environment);
+  ENVIRONMENT(self, &lmdb_environment_type, environment);
 
-        if (NIL_P(txn)) {
-                VALUE oldtxn = rb_hash_aref(environment->thread_txn_hash, thread);
-                if (!NIL_P(oldtxn)) {
-                        rb_hash_delete(environment->thread_txn_hash, thread);
-                        rb_hash_delete(environment->txn_thread_hash, oldtxn);
-                }
-        } else {
-                VALUE oldtxn = rb_hash_aref(environment->thread_txn_hash, thread);
-                if (!NIL_P(oldtxn)) {
-                        rb_hash_delete(environment->txn_thread_hash, oldtxn);
-                }
-                rb_hash_aset(environment->txn_thread_hash, txn, thread);
-                rb_hash_aset(environment->thread_txn_hash, thread, txn);
-        }
+  if (NIL_P(txn)) {
+    VALUE oldtxn = rb_hash_aref(environment->thread_txn_hash, thread);
+    if (!NIL_P(oldtxn)) {
+      rb_hash_delete(environment->thread_txn_hash, thread);
+      rb_hash_delete(environment->txn_thread_hash, oldtxn);
+    }
+  } else {
+    VALUE oldtxn = rb_hash_aref(environment->thread_txn_hash, thread);
+    if (!NIL_P(oldtxn)) {
+      rb_hash_delete(environment->txn_thread_hash, oldtxn);
+    }
+    rb_hash_aset(environment->txn_thread_hash, txn, thread);
+    rb_hash_aset(environment->thread_txn_hash, thread, txn);
+  }
 }
 
 static MDB_txn* extract_txn(VALUE vtxn) {
   if (NIL_P(vtxn)) return NULL;
-  TRANSACTION(vtxn, transaction);
+  TRANSACTION(vtxn, &lmdb_transaction_type, transaction);
   if (!transaction->txn) rb_raise(cError, "Transaction is already terminated");
   if (transaction->thread != rb_thread_current())
     rb_raise(cError, "Transaction is from another thread");
@@ -1054,15 +1012,15 @@ static MDB_txn* extract_txn(VALUE vtxn) {
 }
 
 static MDB_txn* active_txn(VALUE self) {
-        VALUE vtxn = environment_active_txn(self);
-        return extract_txn(vtxn);
+  VALUE vtxn = environment_active_txn(self);
+  return extract_txn(vtxn);
 }
 
 static MDB_txn* need_txn(VALUE self) {
-        MDB_txn* txn = active_txn(self);
+  MDB_txn* txn = active_txn(self);
 
-        if (!txn) rb_raise(cError, "No active transaction");
-        return txn;
+  if (!txn) rb_raise(cError, "No active transaction");
+  return txn;
 }
 
 /**
@@ -1099,34 +1057,58 @@ static MDB_txn* need_txn(VALUE self) {
  *      db['a']                        #=> 3
  */
 static VALUE environment_transaction(int argc, VALUE *argv, VALUE self) {
-        rb_need_block();
+  rb_need_block();
 
-        VALUE readonly;
-        rb_scan_args(argc, argv, "01", &readonly);
-        unsigned int flags = RTEST(readonly) ? MDB_RDONLY : 0;
+  VALUE readonly;
+  rb_scan_args(argc, argv, "01", &readonly);
+  unsigned int flags = RTEST(readonly) ? MDB_RDONLY : 0;
 
-        return with_transaction(self, rb_yield, Qnil, flags);
+  return with_transaction(self, rb_yield, Qnil, flags);
 }
 
 #ifdef HAVE_RB_GC_MARK_MOVABLE
-static void database_mark(Database* database) {
-  GC_MARK_MOVABLE(database->env);
+static void database_mark(void *ptr) {
+  Database *database = (Database *)ptr;
+  if (database)
+    GC_MARK_MOVABLE(database->env);
 }
 
-static VALUE database_compact_m(VALUE self) {
+static void database_compact(void *ptr) {
+  Database *database = (Database *)ptr;
+  if (database)
+    GC_LOCATION(database->env);
+}
+
+static void database_free(void* ptr) {
+  Database *database = (Database *)ptr;
+  xfree(database);
+}
+
+/* Define the modern TypedData specifications */
+static const rb_data_type_t lmdb_database_type = {
+  .wrap_struct_name = "LMDB::Database",
+  .function = {
+    .dmark = database_mark,
+    .dfree = database_free,
+    .dsize = NULL,
+    .dcompact = database_compact,
+  },
+  .flags = 0
+};
+
+/*
+  static VALUE database_compact_m(VALUE self) {
   DATABASE(self, database);
   GC_LOCATION(database->env);
   return Qnil;
-}
+  }
+*/
 #else
-static void database_mark(Database* database) {
+static void database_mark(void* ptr) {
+  Database *database = (Database *)ptr;
   rb_gc_mark(database->env);
 }
 #endif
-
-static void database_free(Database* database) {
-  free(database);
-}
 
 #define METHOD database_flags
 #define FILE "dbi_flags.h"
@@ -1172,35 +1154,34 @@ static void database_free(Database* database) {
  *       transaction or a read-only environment.
  */
 static VALUE environment_database(int argc, VALUE *argv, VALUE self) {
-    ENVIRONMENT(self, environment);
-    if (!active_txn(self))
-        return call_with_transaction(self, self, "database", argc, argv, 0);
+  ENVIRONMENT(self, &lmdb_environment_type, environment);
+  if (!active_txn(self))
+    return call_with_transaction(self, self, "database", argc, argv, 0);
 
-    VALUE name, option_hash;
+  VALUE name, option_hash;
 #ifdef RB_SCAN_ARGS_KEYWORDS
-    rb_scan_args_kw(RB_SCAN_ARGS_KEYWORDS,
-                    argc, argv, "01:", &name, &option_hash);
+  rb_scan_args_kw(RB_SCAN_ARGS_KEYWORDS,
+                  argc, argv, "01:", &name, &option_hash);
 #else
-    rb_scan_args(argc, argv, "01:", &name, &option_hash);
+  rb_scan_args(argc, argv, "01:", &name, &option_hash);
 #endif
 
+  int flags = 0;
+  if (!NIL_P(option_hash))
+    rb_hash_foreach(option_hash, (int (*)(ANYARGS))database_flags,
+                    (VALUE)&flags);
 
-    int flags = 0;
-    if (!NIL_P(option_hash))
-        rb_hash_foreach(option_hash, (int (*)(ANYARGS))database_flags,
-                        (VALUE)&flags);
+  MDB_dbi dbi;
+  check(mdb_dbi_open(need_txn(self), NIL_P(name) ? 0 : StringValueCStr(name),
+                     flags, &dbi));
 
-    MDB_dbi dbi;
-    check(mdb_dbi_open(need_txn(self), NIL_P(name) ? 0 : StringValueCStr(name),
-                       flags, &dbi));
+  Database* database;
+  VALUE vdb = TypedData_Make_Struct(cDatabase, Database,
+                                    &lmdb_database_type, database);
+  database->dbi = dbi;
+  database->env = self;
 
-    Database* database;
-    VALUE vdb = Data_Make_Struct(cDatabase, Database, database_mark,
-                                 database_free, database);
-    database->dbi = dbi;
-    database->env = self;
-
-    return vdb;
+  return vdb;
 }
 
 /**
@@ -1212,42 +1193,42 @@ static VALUE environment_database(int argc, VALUE *argv, VALUE self) {
  * @raise [Error] If there is an error opening the main database.
  */
 static VALUE environment_databases(VALUE self) {
-    ENVIRONMENT(self, environment);
-    if (!active_txn(self))
-        return call_with_transaction(self, self, "databases", 0, 0, MDB_RDONLY);
+  ENVIRONMENT(self, &lmdb_environment_type, environment);
+  if (!active_txn(self))
+    return call_with_transaction(self, self, "databases", 0, 0, MDB_RDONLY);
 
-    MDB_dbi dbi;
-    MDB_cursor *cursor;
-    MDB_txn *txn = need_txn(self);
-    MDB_val key;
+  MDB_dbi dbi;
+  MDB_cursor *cursor;
+  MDB_txn *txn = need_txn(self);
+  MDB_val key;
 
-    check(mdb_dbi_open(txn, NULL, 0, &dbi));
-    check(mdb_cursor_open(txn, dbi, &cursor));
+  check(mdb_dbi_open(txn, NULL, 0, &dbi));
+  check(mdb_cursor_open(txn, dbi, &cursor));
 
-    VALUE ret = rb_ary_new();
-    while (mdb_cursor_get(cursor, &key, NULL, MDB_NEXT_NODUP) == MDB_SUCCESS) {
-        char *intern_db_name;
-        MDB_dbi db;
-        VALUE db_name;
+  VALUE ret = rb_ary_new();
+  while (mdb_cursor_get(cursor, &key, NULL, MDB_NEXT_NODUP) == MDB_SUCCESS) {
+    char *intern_db_name;
+    MDB_dbi db;
+    VALUE db_name;
 
-        if (memchr(key.mv_data, '\0', key.mv_size))
-            continue;
+    if (memchr(key.mv_data, '\0', key.mv_size))
+      continue;
 
-        intern_db_name = malloc(key.mv_size + 1);
-        memcpy(intern_db_name, key.mv_data, key.mv_size);
-        intern_db_name[key.mv_size] = '\0';
+    intern_db_name = malloc(key.mv_size + 1);
+    memcpy(intern_db_name, key.mv_data, key.mv_size);
+    intern_db_name[key.mv_size] = '\0';
 
-        if (mdb_dbi_open(txn, intern_db_name, 0, &db) == MDB_SUCCESS) {
-            mdb_dbi_close(environment->env, db);
-            db_name = rb_str_new(key.mv_data, key.mv_size);
-            rb_ary_push(ret, db_name);
-        }
-        free(intern_db_name);
+    if (mdb_dbi_open(txn, intern_db_name, 0, &db) == MDB_SUCCESS) {
+      mdb_dbi_close(environment->env, db);
+      db_name = rb_str_new(key.mv_data, key.mv_size);
+      rb_ary_push(ret, db_name);
     }
+    xfree(intern_db_name);
+  }
 
-    mdb_cursor_close(cursor);
+  mdb_cursor_close(cursor);
 
-    return ret;
+  return ret;
 }
 
 /**
@@ -1262,14 +1243,14 @@ static VALUE environment_databases(VALUE self) {
  *   * +:entries+ Number of data items
  */
 static VALUE database_stat(VALUE self) {
-        DATABASE(self, database);
-        if (!active_txn(database->env))
-                return call_with_transaction(database->env,
-                                             self, "stat", 0, 0, MDB_RDONLY);
+  DATABASE(self, &lmdb_database_type, database);
+  if (!active_txn(database->env))
+    return call_with_transaction(database->env,
+                                 self, "stat", 0, 0, MDB_RDONLY);
 
-        MDB_stat stat;
-        check(mdb_stat(need_txn(database->env), database->dbi, &stat));
-        return stat2hash(&stat);
+  MDB_stat stat;
+  check(mdb_stat(need_txn(database->env), database->dbi, &stat));
+  return stat2hash(&stat);
 }
 
 /**
@@ -1278,13 +1259,13 @@ static VALUE database_stat(VALUE self) {
  *   @return [Hash] The flags.
  */
 static VALUE database_get_flags(VALUE self) {
-        DATABASE(self, database);
-        if (!active_txn(database->env))
-                return call_with_transaction(database->env,
-                                             self, "flags", 0, 0, MDB_RDONLY);
-        unsigned int flags;
-        check(mdb_dbi_flags(need_txn(database->env), database->dbi, &flags));
-        return flags2hash(flags);
+  DATABASE(self, &lmdb_database_type, database);
+  if (!active_txn(database->env))
+    return call_with_transaction(database->env,
+                                 self, "flags", 0, 0, MDB_RDONLY);
+  unsigned int flags;
+  check(mdb_dbi_flags(need_txn(database->env), database->dbi, &flags));
+  return flags2hash(flags);
 }
 
 /* XXX these two could probably also be macro'd, or maybe not i dunno */
@@ -1295,14 +1276,14 @@ static VALUE database_get_flags(VALUE self) {
  *   @return [true, false]
  */
 static VALUE database_is_dupsort(VALUE self) {
-        DATABASE(self, database);
-        if (!active_txn(database->env))
-                return call_with_transaction(database->env, self,
-                                             "dupsort?", 0, 0, MDB_RDONLY);
-        unsigned int flags;
-        check(mdb_dbi_flags(need_txn(database->env), database->dbi, &flags));
+  DATABASE(self, &lmdb_database_type, database);
+  if (!active_txn(database->env))
+    return call_with_transaction(database->env, self,
+                                 "dupsort?", 0, 0, MDB_RDONLY);
+  unsigned int flags;
+  check(mdb_dbi_flags(need_txn(database->env), database->dbi, &flags));
 
-        return (flags & MDB_DUPSORT) == 0 ? Qfalse : Qtrue;
+  return (flags & MDB_DUPSORT) == 0 ? Qfalse : Qtrue;
 }
 
 /**
@@ -1311,14 +1292,14 @@ static VALUE database_is_dupsort(VALUE self) {
  *   @return [true, false]
  */
 static VALUE database_is_dupfixed(VALUE self) {
-        DATABASE(self, database);
-        if (!active_txn(database->env))
-                return call_with_transaction(database->env, self,
-                                             "dupfixed?", 0, 0, MDB_RDONLY);
-        unsigned int flags;
-        check(mdb_dbi_flags(need_txn(database->env), database->dbi, &flags));
+  DATABASE(self, &lmdb_database_type, database);
+  if (!active_txn(database->env))
+    return call_with_transaction(database->env, self,
+                                 "dupfixed?", 0, 0, MDB_RDONLY);
+  unsigned int flags;
+  check(mdb_dbi_flags(need_txn(database->env), database->dbi, &flags));
 
-        return (flags & MDB_DUPFIXED) == 0 ? Qfalse : Qtrue;
+  return (flags & MDB_DUPFIXED) == 0 ? Qfalse : Qtrue;
 }
 
 /**
@@ -1328,11 +1309,11 @@ static VALUE database_is_dupfixed(VALUE self) {
  *   @note The drop happens transactionally.
  */
 static VALUE database_drop(VALUE self) {
-        DATABASE(self, database);
-        if (!active_txn(database->env))
-                return call_with_transaction(database->env, self, "drop", 0, 0, 0);
-        check(mdb_drop(need_txn(database->env), database->dbi, 1));
-        return Qnil;
+  DATABASE(self, &lmdb_database_type, database);
+  if (!active_txn(database->env))
+    return call_with_transaction(database->env, self, "drop", 0, 0, 0);
+  check(mdb_drop(need_txn(database->env), database->dbi, 1));
+  return Qnil;
 }
 
 /**
@@ -1342,11 +1323,11 @@ static VALUE database_drop(VALUE self) {
  *    @note The clear happens transactionally.
  */
 static VALUE database_clear(VALUE self) {
-        DATABASE(self, database);
-        if (!active_txn(database->env))
-                return call_with_transaction(database->env, self, "clear", 0, 0, 0);
-        check(mdb_drop(need_txn(database->env), database->dbi, 0));
-        return Qnil;
+  DATABASE(self, &lmdb_database_type, database);
+  if (!active_txn(database->env))
+    return call_with_transaction(database->env, self, "clear", 0, 0, 0);
+  check(mdb_drop(need_txn(database->env), database->dbi, 0));
+  return Qnil;
 }
 
 /**
@@ -1359,20 +1340,20 @@ static VALUE database_clear(VALUE self) {
  *   @param key The key of the record to retrieve.
  */
 static VALUE database_get(VALUE self, VALUE vkey) {
-        DATABASE(self, database);
-        if (!active_txn(database->env))
-                return call_with_transaction(database->env, self, "get", 1, &vkey, MDB_RDONLY);
+  DATABASE(self, &lmdb_database_type, database);
+  if (!active_txn(database->env))
+    return call_with_transaction(database->env, self, "get", 1, &vkey, MDB_RDONLY);
 
-        vkey = StringValue(vkey);
-        MDB_val key, value;
-        key.mv_size = RSTRING_LEN(vkey);
-        key.mv_data = RSTRING_PTR(vkey);
+  vkey = StringValue(vkey);
+  MDB_val key, value;
+  key.mv_size = RSTRING_LEN(vkey);
+  key.mv_data = RSTRING_PTR(vkey);
 
-        int ret = mdb_get(need_txn(database->env), database->dbi, &key, &value);
-        if (ret == MDB_NOTFOUND)
-                return Qnil;
-        check(ret);
-        return rb_str_new(value.mv_data, value.mv_size);
+  int ret = mdb_get(need_txn(database->env), database->dbi, &key, &value);
+  if (ret == MDB_NOTFOUND)
+    return Qnil;
+  check(ret);
+  return rb_str_new(value.mv_data, value.mv_size);
 }
 
 #define METHOD database_put_flags
@@ -1409,34 +1390,34 @@ static VALUE database_get(VALUE self, VALUE vkey) {
  *       data.
  */
 static VALUE database_put(int argc, VALUE *argv, VALUE self) {
-    DATABASE(self, database);
-    if (!active_txn(database->env))
-        return call_with_transaction(database->env, self, "put", argc, argv, 0);
+  DATABASE(self, &lmdb_database_type, database);
+  if (!active_txn(database->env))
+    return call_with_transaction(database->env, self, "put", argc, argv, 0);
 
-    VALUE vkey, vval, option_hash = Qnil;
+  VALUE vkey, vval, option_hash = Qnil;
 #ifdef RB_SCAN_ARGS_KEYWORDS
-    rb_scan_args_kw(RB_SCAN_ARGS_LAST_HASH_KEYWORDS,
-                    argc, argv, "20:", &vkey, &vval, &option_hash);
+  rb_scan_args_kw(RB_SCAN_ARGS_LAST_HASH_KEYWORDS,
+                  argc, argv, "20:", &vkey, &vval, &option_hash);
 #else
-    rb_scan_args(argc, argv, "20:", &vkey, &vval, &option_hash);
+  rb_scan_args(argc, argv, "20:", &vkey, &vval, &option_hash);
 #endif
 
-    int flags = 0;
-    if (!NIL_P(option_hash))
-        rb_hash_foreach(option_hash, (int (*)(ANYARGS))database_put_flags,
-                        (VALUE)&flags);
+  int flags = 0;
+  if (!NIL_P(option_hash))
+    rb_hash_foreach(option_hash, (int (*)(ANYARGS))database_put_flags,
+                    (VALUE)&flags);
 
-    vkey = StringValue(vkey);
-    vval = StringValue(vval);
+  vkey = StringValue(vkey);
+  vval = StringValue(vval);
 
-    MDB_val key, value;
-    key.mv_size = RSTRING_LEN(vkey);
-    key.mv_data = RSTRING_PTR(vkey);
-    value.mv_size = RSTRING_LEN(vval);
-    value.mv_data = RSTRING_PTR(vval);
+  MDB_val key, value;
+  key.mv_size = RSTRING_LEN(vkey);
+  key.mv_data = RSTRING_PTR(vkey);
+  value.mv_size = RSTRING_LEN(vval);
+  value.mv_data = RSTRING_PTR(vval);
 
-    check(mdb_put(need_txn(database->env), database->dbi, &key, &value, flags));
-    return Qnil;
+  check(mdb_put(need_txn(database->env), database->dbi, &key, &value, flags));
+  return Qnil;
 }
 
 /**
@@ -1455,60 +1436,79 @@ static VALUE database_put(int argc, VALUE *argv, VALUE self) {
  * @raise [Error] if the specified key/value pair is not in the database.
  */
 static VALUE database_delete(int argc, VALUE *argv, VALUE self) {
-        DATABASE(self, database);
-        if (!active_txn(database->env))
-                return call_with_transaction(database->env, self, "delete", argc, argv, 0);
+  DATABASE(self, &lmdb_database_type, database);
+  if (!active_txn(database->env))
+    return call_with_transaction(database->env, self, "delete", argc, argv, 0);
 
-        VALUE vkey, vval;
-        rb_scan_args(argc, argv, "11", &vkey, &vval);
+  VALUE vkey, vval;
+  rb_scan_args(argc, argv, "11", &vkey, &vval);
 
-        vkey = StringValue(vkey);
+  vkey = StringValue(vkey);
 
-        MDB_val key;
-        key.mv_size = RSTRING_LEN(vkey);
-        key.mv_data = RSTRING_PTR(vkey);
+  MDB_val key;
+  key.mv_size = RSTRING_LEN(vkey);
+  key.mv_data = RSTRING_PTR(vkey);
 
-        if (NIL_P(vval)) {
-                check(mdb_del(need_txn(database->env), database->dbi, &key, 0));
-        } else {
-                vval = StringValue(vval);
-                MDB_val value;
-                value.mv_size = RSTRING_LEN(vval);
-                value.mv_data = RSTRING_PTR(vval);
-                check(mdb_del(need_txn(database->env), database->dbi, &key, &value));
-        }
+  if (NIL_P(vval)) {
+    check(mdb_del(need_txn(database->env), database->dbi, &key, 0));
+  } else {
+    vval = StringValue(vval);
+    MDB_val value;
+    value.mv_size = RSTRING_LEN(vval);
+    value.mv_data = RSTRING_PTR(vval);
+    check(mdb_del(need_txn(database->env), database->dbi, &key, &value));
+  }
 
-        return Qnil;
+  return Qnil;
 }
 
-static void cursor_free(Cursor* cursor) {
+static void cursor_free(void* ptr) {
+  Cursor *cursor = (Cursor *)ptr;
   if (cursor->cur) {
     rb_warn("Memory leak - Garbage collecting open cursor");
     mdb_cursor_close(cursor->cur);
   }
 
-  free(cursor);
+  xfree(cursor);
 }
 
 static void cursor_check(Cursor* cursor) {
-        if (!cursor->cur)
-                rb_raise(cError, "Cursor is closed");
+  if (!cursor->cur)
+    rb_raise(cError, "Cursor is closed");
 }
 
 #ifdef HAVE_RB_GC_MARK_MOVABLE
-static void cursor_mark(Cursor* cursor) {
-  GC_MARK_MOVABLE(cursor->db);
+static void cursor_mark(void *ptr) {
+  Cursor *cursor = (Cursor *)ptr;
+  if (cursor)
+    GC_MARK_MOVABLE(cursor->db);
 }
 
-static void cursor_compact(Cursor* cursor) {
-  GC_LOCATION(cursor->db);
+static void cursor_compact(void *ptr) {
+  Cursor *cursor = (Cursor *)ptr;
+  if (cursor)
+    GC_LOCATION(cursor->db);
 }
 
-static VALUE cursor_compact_m(VALUE self) {
+/* Define the modern TypedData specifications */
+static const rb_data_type_t lmdb_cursor_type = {
+  .wrap_struct_name = "LMDB::Cursor",
+  .function = {
+    .dmark = cursor_mark,
+    .dfree = cursor_free,
+    .dsize = NULL,
+    .dcompact = cursor_compact,
+  },
+  .flags = 0
+};
+
+/*
+  static VALUE cursor_compact_m(VALUE self) {
   CURSOR(self, cursor);
   cursor_compact(cursor);
   return Qnil;
-}
+  }
+*/
 
 #else
 static void cursor_mark(Cursor* cursor) {
@@ -1521,10 +1521,10 @@ static void cursor_mark(Cursor* cursor) {
  *  Close a cursor.  The cursor must not be used again after this call.
  */
 static VALUE cursor_close(VALUE self) {
-        CURSOR(self, cursor);
-        mdb_cursor_close(cursor->cur);
-        cursor->cur = 0;
-        return Qnil;
+  CURSOR(self, &lmdb_cursor_type, cursor);
+  mdb_cursor_close(cursor->cur);
+  cursor->cur = 0;
+  return Qnil;
 }
 
 /**
@@ -1545,44 +1545,45 @@ static VALUE cursor_close(VALUE self) {
  *    end
  */
 static VALUE database_cursor(VALUE self) {
-        DATABASE(self, database);
-        if (!active_txn(database->env)) {
-                if (!rb_block_given_p()) {
-                        rb_raise(cError, "Must call with block or active transaction.");
-                }
-                return call_with_transaction(database->env, self, "cursor", 0, 0, 0);
-        }
+  DATABASE(self, &lmdb_database_type, database);
+  if (!active_txn(database->env)) {
+    if (!rb_block_given_p()) {
+      rb_raise(cError, "Must call with block or active transaction.");
+    }
+    return call_with_transaction(database->env, self, "cursor", 0, 0, 0);
+  }
 
-        MDB_cursor* cur;
-        check(mdb_cursor_open(need_txn(database->env), database->dbi, &cur));
+  MDB_cursor* cur;
+  check(mdb_cursor_open(need_txn(database->env), database->dbi, &cur));
 
-        Cursor* cursor;
-        VALUE vcur = Data_Make_Struct(cCursor, Cursor, cursor_mark, cursor_free, cursor);
-        cursor->cur = cur;
-        cursor->db = self;
+  Cursor* cursor;
+  VALUE vcur = TypedData_Make_Struct(cCursor, Cursor,
+                                     &lmdb_cursor_type, cursor);
+  cursor->cur = cur;
+  cursor->db = self;
 
-        if (rb_block_given_p()) {
-                int exception;
-                VALUE ret = rb_protect(rb_yield, vcur, &exception);
-                if (exception) {
-                        cursor_close(vcur);
-                        rb_jump_tag(exception);
-                }
-                cursor_close(vcur);
-                return ret;
-        }
-        else {
-                VALUE vtxn = environment_active_txn(database->env);
-                if (NIL_P(vtxn)) {
-                        rb_fatal("Internal error: transaction finished unexpectedly.");
-                }
-                else {
-                        TRANSACTION(vtxn, txn);
-                        rb_ary_push(txn->cursors, vcur);
-                }
-        }
+  if (rb_block_given_p()) {
+    int exception;
+    VALUE ret = rb_protect(rb_yield, vcur, &exception);
+    if (exception) {
+      cursor_close(vcur);
+      rb_jump_tag(exception);
+    }
+    cursor_close(vcur);
+    return ret;
+  }
+  else {
+    VALUE vtxn = environment_active_txn(database->env);
+    if (NIL_P(vtxn)) {
+      rb_fatal("Internal error: transaction finished unexpectedly.");
+    }
+    else {
+      TRANSACTION(vtxn, &lmdb_transaction_type, txn);
+      rb_ary_push(txn->cursors, vcur);
+    }
+  }
 
-        return vcur;
+  return vcur;
 }
 
 /**
@@ -1590,8 +1591,8 @@ static VALUE database_cursor(VALUE self) {
  *   @return [Environment] the environment to which this database belongs.
  */
 static VALUE database_env(VALUE self) {
-        DATABASE(self, database);
-        return database->env;
+  DATABASE(self, &lmdb_database_type, database);
+  return database->env;
 }
 
 /**
@@ -1602,11 +1603,11 @@ static VALUE database_env(VALUE self) {
  *        nil if no record
  */
 static VALUE cursor_first(VALUE self) {
-        CURSOR(self, cursor);
-        MDB_val key, value;
+  CURSOR(self, &lmdb_cursor_type, cursor);
+  MDB_val key, value;
 
-        check(mdb_cursor_get(cursor->cur, &key, &value, MDB_FIRST));
-        return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size), rb_str_new(value.mv_data, value.mv_size));
+  check(mdb_cursor_get(cursor->cur, &key, &value, MDB_FIRST));
+  return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size), rb_str_new(value.mv_data, value.mv_size));
 }
 
 /**
@@ -1617,11 +1618,11 @@ static VALUE cursor_first(VALUE self) {
  *        nil if no record.
  */
 static VALUE cursor_last(VALUE self) {
-        CURSOR(self, cursor);
-        MDB_val key, value;
+  CURSOR(self, &lmdb_cursor_type, cursor);
+  MDB_val key, value;
 
-        check(mdb_cursor_get(cursor->cur, &key, &value, MDB_LAST));
-        return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size), rb_str_new(value.mv_data, value.mv_size));
+  check(mdb_cursor_get(cursor->cur, &key, &value, MDB_LAST));
+  return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size), rb_str_new(value.mv_data, value.mv_size));
 }
 
 /**
@@ -1632,14 +1633,14 @@ static VALUE cursor_last(VALUE self) {
  *        nil if no previous record.
  */
 static VALUE cursor_prev(VALUE self) {
-        CURSOR(self, cursor);
-        MDB_val key, value;
+  CURSOR(self, &lmdb_cursor_type, cursor);
+  MDB_val key, value;
 
-        int ret = mdb_cursor_get(cursor->cur, &key, &value, MDB_PREV);
-        if (ret == MDB_NOTFOUND)
-                return Qnil;
-        check(ret);
-        return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size), rb_str_new(value.mv_data, value.mv_size));
+  int ret = mdb_cursor_get(cursor->cur, &key, &value, MDB_PREV);
+  if (ret == MDB_NOTFOUND)
+    return Qnil;
+  check(ret);
+  return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size), rb_str_new(value.mv_data, value.mv_size));
 }
 
 /**
@@ -1651,22 +1652,22 @@ static VALUE cursor_prev(VALUE self) {
  *        nil if no next record.
  */
 static VALUE cursor_next(int argc, VALUE* argv, VALUE self) {
-        CURSOR(self, cursor);
-        VALUE nodup;
-        MDB_val key, value;
-        MDB_cursor_op op = MDB_NEXT;
+  CURSOR(self, &lmdb_cursor_type, cursor);
+  VALUE nodup;
+  MDB_val key, value;
+  MDB_cursor_op op = MDB_NEXT;
 
-        rb_scan_args(argc, argv, "01", &nodup);
+  rb_scan_args(argc, argv, "01", &nodup);
 
-        if (RTEST(nodup))
-          op = MDB_NEXT_NODUP;
+  if (RTEST(nodup))
+    op = MDB_NEXT_NODUP;
 
-        int ret = mdb_cursor_get(cursor->cur, &key, &value, op);
-        if (ret == MDB_NOTFOUND)
-                return Qnil;
-        check(ret);
-        return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size),
-                            rb_str_new(value.mv_data, value.mv_size));
+  int ret = mdb_cursor_get(cursor->cur, &key, &value, op);
+  if (ret == MDB_NOTFOUND)
+    return Qnil;
+  check(ret);
+  return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size),
+                      rb_str_new(value.mv_data, value.mv_size));
 }
 
 /**
@@ -1679,26 +1680,26 @@ static VALUE cursor_next(int argc, VALUE* argv, VALUE self) {
  *        nil if no next record or the next record is out of the range.
  */
 static VALUE cursor_next_range(VALUE self, VALUE upper_bound_key) {
-        CURSOR(self, cursor);
-        MDB_val key, value, ub_key;
+  CURSOR(self, &lmdb_cursor_type, cursor);
+  MDB_val key, value, ub_key;
 
-        int ret = mdb_cursor_get(cursor->cur, &key, &value, MDB_NEXT);
-        if (ret == MDB_NOTFOUND)
-                return Qnil;
-        check(ret);
+  int ret = mdb_cursor_get(cursor->cur, &key, &value, MDB_NEXT);
+  if (ret == MDB_NOTFOUND)
+    return Qnil;
+  check(ret);
 
-        ub_key.mv_size = RSTRING_LEN(upper_bound_key);
-        ub_key.mv_data = StringValuePtr(upper_bound_key);
+  ub_key.mv_size = RSTRING_LEN(upper_bound_key);
+  ub_key.mv_data = StringValuePtr(upper_bound_key);
 
-        MDB_txn* txn = mdb_cursor_txn(cursor->cur);
-        MDB_dbi dbi = mdb_cursor_dbi(cursor->cur);
+  MDB_txn* txn = mdb_cursor_txn(cursor->cur);
+  MDB_dbi dbi = mdb_cursor_dbi(cursor->cur);
 
-        if (mdb_cmp(txn, dbi, &key, &ub_key) <= 0) {
-          return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size),
-                              rb_str_new(value.mv_data, value.mv_size));
-        } else {
-          return Qnil;
-        }
+  if (mdb_cmp(txn, dbi, &key, &ub_key) <= 0) {
+    return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size),
+                        rb_str_new(value.mv_data, value.mv_size));
+  } else {
+    return Qnil;
+  }
 }
 
 /**
@@ -1709,46 +1710,46 @@ static VALUE cursor_next_range(VALUE self, VALUE upper_bound_key) {
  *   @param value [nil, #to_s] The optional value (+:dupsort+ only)
  *   @return [Array] The +[key, value]+ pair to which the cursor now points.
  */
- static VALUE cursor_set(int argc, VALUE* argv, VALUE self) {
-         CURSOR(self, cursor);
-         VALUE vkey, vval;
-         MDB_val key, value;
-         MDB_cursor_op op = MDB_SET_KEY;
-         int ret;
+static VALUE cursor_set(int argc, VALUE* argv, VALUE self) {
+  CURSOR(self, &lmdb_cursor_type, cursor);
+  VALUE vkey, vval;
+  MDB_val key, value;
+  MDB_cursor_op op = MDB_SET_KEY;
+  int ret;
 
-         rb_scan_args(argc, argv, "11", &vkey, &vval);
+  rb_scan_args(argc, argv, "11", &vkey, &vval);
 
-         /*
-           XXX TODO: this was a nasty segfault: the key (and any
-           non-nil value) should be asserted to be strings, but then
-           if the database is `integerkeys` then perhaps we should
-           coerce?
-         */
+  /*
+    XXX TODO: this was a nasty segfault: the key (and any
+    non-nil value) should be asserted to be strings, but then
+    if the database is `integerkeys` then perhaps we should
+    coerce?
+  */
 
-         if (TYPE(vkey) != T_STRING)
-           rb_raise(rb_eArgError, "key must be a string");
+  if (TYPE(vkey) != T_STRING)
+    rb_raise(rb_eArgError, "key must be a string");
 
-         key.mv_size = RSTRING_LEN(vkey);
-         key.mv_data = StringValuePtr(vkey);
+  key.mv_size = RSTRING_LEN(vkey);
+  key.mv_data = StringValuePtr(vkey);
 
-         if (!NIL_P(vval)) {
-           if (TYPE(vval) != T_STRING)
-             rb_raise(rb_eArgError, "non-nil value must be a string");
+  if (!NIL_P(vval)) {
+    if (TYPE(vval) != T_STRING)
+      rb_raise(rb_eArgError, "non-nil value must be a string");
 
-           op = MDB_GET_BOTH;
-           value.mv_size = RSTRING_LEN(vval);
-           value.mv_data = StringValuePtr(vval);
-         }
+    op = MDB_GET_BOTH;
+    value.mv_size = RSTRING_LEN(vval);
+    value.mv_data = StringValuePtr(vval);
+  }
 
-         ret = mdb_cursor_get(cursor->cur, &key, &value, op);
+  ret = mdb_cursor_get(cursor->cur, &key, &value, op);
 
-         if (!NIL_P(vval) && ret == MDB_NOTFOUND)
-           return Qnil;
+  if (!NIL_P(vval) && ret == MDB_NOTFOUND)
+    return Qnil;
 
-         check(ret);
+  check(ret);
 
-         return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size),
-                             rb_str_new(value.mv_data, value.mv_size));
+  return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size),
+                      rb_str_new(value.mv_data, value.mv_size));
 }
 
 /**
@@ -1758,22 +1759,22 @@ static VALUE cursor_next_range(VALUE self, VALUE upper_bound_key) {
  *   @return [Array] The [key, value] pair to which the cursor now points.
  */
 static VALUE cursor_set_range(VALUE self, VALUE vkey) {
-        CURSOR(self, cursor);
-        MDB_val key, value;
-        int ret;
+  CURSOR(self, &lmdb_cursor_type, cursor);
+  MDB_val key, value;
+  int ret;
 
-        key.mv_size = RSTRING_LEN(vkey);
-        key.mv_data = StringValuePtr(vkey);
+  key.mv_size = RSTRING_LEN(vkey);
+  key.mv_data = StringValuePtr(vkey);
 
-        ret = mdb_cursor_get(cursor->cur, &key, &value, MDB_SET_RANGE);
+  ret = mdb_cursor_get(cursor->cur, &key, &value, MDB_SET_RANGE);
 
-        /* not sure why we were letting this throw an exception */
-        if (ret == MDB_NOTFOUND) return Qnil;
+  /* not sure why we were letting this throw an exception */
+  if (ret == MDB_NOTFOUND) return Qnil;
 
-        check(ret);
+  check(ret);
 
-        return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size),
-                            rb_str_new(value.mv_data, value.mv_size));
+  return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size),
+                      rb_str_new(value.mv_data, value.mv_size));
 }
 
 /**
@@ -1783,14 +1784,14 @@ static VALUE cursor_set_range(VALUE self, VALUE vkey) {
  */
 
 static VALUE cursor_get(VALUE self) {
-        CURSOR(self, cursor);
+  CURSOR(self, &lmdb_cursor_type, cursor);
 
-        MDB_val key, value;
-        int ret = mdb_cursor_get(cursor->cur, &key, &value, MDB_GET_CURRENT);
-        if (ret == MDB_NOTFOUND)
-                return Qnil;
-        check(ret);
-        return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size), rb_str_new(value.mv_data, value.mv_size));
+  MDB_val key, value;
+  int ret = mdb_cursor_get(cursor->cur, &key, &value, MDB_GET_CURRENT);
+  if (ret == MDB_NOTFOUND)
+    return Qnil;
+  check(ret);
+  return rb_assoc_new(rb_str_new(key.mv_data, key.mv_size), rb_str_new(value.mv_data, value.mv_size));
 }
 
 #define METHOD cursor_put_flags
@@ -1831,32 +1832,32 @@ static VALUE cursor_get(VALUE self) {
  *       data.
  */
 static VALUE cursor_put(int argc, VALUE* argv, VALUE self) {
-    CURSOR(self, cursor);
+  CURSOR(self, &lmdb_cursor_type, cursor);
 
-    VALUE vkey, vval, option_hash;
+  VALUE vkey, vval, option_hash;
 #ifdef RB_SCAN_ARGS_KEYWORDS
-    rb_scan_args_kw(RB_SCAN_ARGS_LAST_HASH_KEYWORDS,
-                    argc, argv, "2:", &vkey, &vval, &option_hash);
+  rb_scan_args_kw(RB_SCAN_ARGS_LAST_HASH_KEYWORDS,
+                  argc, argv, "2:", &vkey, &vval, &option_hash);
 #else
-    rb_scan_args(argc, argv, "2:", &vkey, &vval, &option_hash);
+  rb_scan_args(argc, argv, "2:", &vkey, &vval, &option_hash);
 #endif
 
-    int flags = 0;
-    if (!NIL_P(option_hash))
-        rb_hash_foreach(option_hash, (int (*)(ANYARGS))cursor_put_flags,
-                        (VALUE)&flags);
+  int flags = 0;
+  if (!NIL_P(option_hash))
+    rb_hash_foreach(option_hash, (int (*)(ANYARGS))cursor_put_flags,
+                    (VALUE)&flags);
 
-    vkey = StringValue(vkey);
-    vval = StringValue(vval);
+  vkey = StringValue(vkey);
+  vval = StringValue(vval);
 
-    MDB_val key, value;
-    key.mv_size = RSTRING_LEN(vkey);
-    key.mv_data = RSTRING_PTR(vkey);
-    value.mv_size = RSTRING_LEN(vval);
-    value.mv_data = RSTRING_PTR(vval);
+  MDB_val key, value;
+  key.mv_size = RSTRING_LEN(vkey);
+  key.mv_data = RSTRING_PTR(vkey);
+  value.mv_size = RSTRING_LEN(vval);
+  value.mv_data = RSTRING_PTR(vval);
 
-    check(mdb_cursor_put(cursor->cur, &key, &value, flags));
-    return Qnil;
+  check(mdb_cursor_put(cursor->cur, &key, &value, flags));
+  return Qnil;
 }
 
 #define METHOD cursor_delete_flags
@@ -1869,28 +1870,28 @@ static VALUE cursor_put(int argc, VALUE* argv, VALUE self) {
  * @overload delete(options)
  *    Delete current key/data pair.
  *    This function deletes the key/data pair to which the cursor refers.
-  *    @option options [Boolean] :nodupdata Delete all of the data
+ *    @option options [Boolean] :nodupdata Delete all of the data
  *        items for the current key. This flag may only be specified
  *        if the database was opened with +:dupsort+.
  */
 static VALUE cursor_delete(int argc, VALUE *argv, VALUE self) {
-    CURSOR(self, cursor);
+  CURSOR(self, &lmdb_cursor_type, cursor);
 
-    VALUE option_hash;
+  VALUE option_hash;
 #ifdef RB_SCAN_ARGS_KEYWORDS
-    rb_scan_args_kw(RB_SCAN_ARGS_LAST_HASH_KEYWORDS,
-                    argc, argv, ":", &option_hash);
+  rb_scan_args_kw(RB_SCAN_ARGS_LAST_HASH_KEYWORDS,
+                  argc, argv, ":", &option_hash);
 #else
-    rb_scan_args(argc, argv, ":", &option_hash);
+  rb_scan_args(argc, argv, ":", &option_hash);
 #endif
 
-    int flags = 0;
-    if (!NIL_P(option_hash))
-        rb_hash_foreach(option_hash, (int (*)(ANYARGS))cursor_delete_flags,
-                        (VALUE)&flags);
+  int flags = 0;
+  if (!NIL_P(option_hash))
+    rb_hash_foreach(option_hash, (int (*)(ANYARGS))cursor_delete_flags,
+                    (VALUE)&flags);
 
-    check(mdb_cursor_del(cursor->cur, flags));
-    return Qnil;
+  check(mdb_cursor_del(cursor->cur, flags));
+  return Qnil;
 }
 
 /**
@@ -1898,8 +1899,8 @@ static VALUE cursor_delete(int argc, VALUE *argv, VALUE self) {
  *   @return [Database] the database which this cursor is iterating over.
  */
 static VALUE cursor_db(VALUE self) {
-        CURSOR(self, cursor);
-        return cursor->db;
+  CURSOR(self, &lmdb_cursor_type, cursor);
+  return cursor->db;
 }
 
 /**
@@ -1910,241 +1911,248 @@ static VALUE cursor_db(VALUE self) {
  *    @return [Number] count of duplicates
  */
 static VALUE cursor_count(VALUE self) {
-        CURSOR(self, cursor);
-        size_t count;
-        check(mdb_cursor_count(cursor->cur, &count));
-        return SIZET2NUM(count);
+  CURSOR(self, &lmdb_cursor_type, cursor);
+  size_t count;
+  check(mdb_cursor_count(cursor->cur, &count));
+  return SIZET2NUM(count);
 }
 
 void Init_lmdb_ext() {
-        VALUE mLMDB;
+  VALUE mLMDB;
 
-        /**
-         * Document-module: LMDB
-         *
-         * The LMDB module presents a Ruby API to the OpenLDAP Lightning Memory-mapped Database (LMDB).
-         * @see http://symas.com/mdb/
-         */
-        mLMDB = rb_define_module("LMDB");
-        rb_define_const(mLMDB, "LIB_VERSION", rb_str_new2(MDB_VERSION_STRING));
-        rb_define_singleton_method(mLMDB, "new", environment_new, -1);
+  /**
+   * Document-module: LMDB
+   *
+   * The LMDB module presents a Ruby API to the OpenLDAP Lightning Memory-mapped Database (LMDB).
+   * @see http://symas.com/mdb/
+   */
+  mLMDB = rb_define_module("LMDB");
+  rb_define_const(mLMDB, "LIB_VERSION", rb_str_new2(MDB_VERSION_STRING));
+  rb_define_singleton_method(mLMDB, "new", environment_new, -1);
 
 #define VERSION_CONST(name) rb_define_const(mLMDB, "LIB_VERSION_"#name, INT2NUM(MDB_VERSION_##name));
-        VERSION_CONST(MAJOR)
-        VERSION_CONST(MINOR)
-        VERSION_CONST(PATCH)
+  VERSION_CONST(MAJOR)
+    VERSION_CONST(MINOR)
+    VERSION_CONST(PATCH)
 #undef VERSION_CONST
 
-        /**
-         * Document-class: LMDB::Error
-         *
-         * A general class of exceptions raised within the LMDB gem.
-         */
-        cError = rb_define_class_under(mLMDB, "Error", rb_eRuntimeError);
-#define ERROR(name) \
-        cError_##name = rb_define_class_under(cError, #name, cError);
+    /**
+     * Document-class: LMDB::Error
+     *
+     * A general class of exceptions raised within the LMDB gem.
+     */
+    cError = rb_define_class_under(mLMDB, "Error", rb_eRuntimeError);
+#define ERROR(name)                                             \
+  cError_##name = rb_define_class_under(cError, #name, cError);
 #include "errors.h"
 #undef ERROR
 
-        /**
-         * Document-class: LMDB::Environment
-         *
-         * The Environment is the root object for all LMDB operations.
-         *
-         * An LMDB "environment" is a collection of one or more "databases"
-         * (key-value tables), along with transactions to modify those
-         * databases and cursors to iterate through them.
-         *
-         * An environment -- and its collection of databases -- is normally
-         * stored in a directory.  That directory will contain two files:
-         * * +data.mdb+: all the records in all the databases in the environment
-         * * +lock.mdb+: state of transactions that may be going on in the environment.
-         *
-         * An environment can contain multiple databases.  Each of the
-         * databases has a string name ("mydatabase", "db.3.1982").  You use
-         * the database name to open the database within the environment.
-         *
-         * @example The normal pattern for using LMDB in Ruby
-         *    env = LMDB.new "databasedir"
-         *    db = env.database "databasename"
-         *    # ... do things to the database ...
-         *    env.close
-         */
-        cEnvironment = rb_define_class_under(mLMDB, "Environment", rb_cObject);
-        rb_undef_alloc_func(cEnvironment);
-        rb_define_singleton_method(cEnvironment, "new", environment_new, -1);
-        rb_define_method(cEnvironment, "database", environment_database, -1);
-        rb_define_method(cEnvironment, "databases", environment_databases, 0);
-        rb_define_method(cEnvironment, "active_txn", environment_active_txn, 0);
-        rb_define_method(cEnvironment, "close", environment_close, 0);
-        rb_define_method(cEnvironment, "stat", environment_stat, 0);
-        rb_define_method(cEnvironment, "info", environment_info, 0);
-        rb_define_method(cEnvironment, "copy", environment_copy, 1);
-        rb_define_method(cEnvironment, "sync", environment_sync, -1);
-        rb_define_method(cEnvironment, "mapsize=", environment_set_mapsize, 1);
-        rb_define_method(cEnvironment, "set_flags", environment_set_flags, -1);
-        rb_define_method(cEnvironment, "clear_flags", environment_clear_flags, -1);
-        rb_define_method(cEnvironment, "flags", environment_flags, 0);
-        rb_define_method(cEnvironment, "path", environment_path, 0);
-        rb_define_method(cEnvironment, "transaction", environment_transaction, -1);
-#ifdef HAVE_RB_GC_MARK_MOVABLE
-        rb_define_method(cEnvironment, "rb_gc_compact", environment_compact_m, 0);
-#endif
+  /**
+   * Document-class: LMDB::Environment
+   *
+   * The Environment is the root object for all LMDB operations.
+   *
+   * An LMDB "environment" is a collection of one or more "databases"
+   * (key-value tables), along with transactions to modify those
+   * databases and cursors to iterate through them.
+   *
+   * An environment -- and its collection of databases -- is normally
+   * stored in a directory.  That directory will contain two files:
+   * * +data.mdb+: all the records in all the databases in the environment
+   * * +lock.mdb+: state of transactions that may be going on in the environment.
+   *
+   * An environment can contain multiple databases.  Each of the
+   * databases has a string name ("mydatabase", "db.3.1982").  You use
+   * the database name to open the database within the environment.
+   *
+   * @example The normal pattern for using LMDB in Ruby
+   *    env = LMDB.new "databasedir"
+   *    db = env.database "databasename"
+   *    # ... do things to the database ...
+   *    env.close
+   */
+  cEnvironment = rb_define_class_under(mLMDB, "Environment", rb_cObject);
+  rb_undef_alloc_func(cEnvironment);
+  rb_define_singleton_method(cEnvironment, "new", environment_new, -1);
+  rb_define_method(cEnvironment, "database", environment_database, -1);
+  rb_define_method(cEnvironment, "databases", environment_databases, 0);
+  rb_define_method(cEnvironment, "active_txn", environment_active_txn, 0);
+  rb_define_method(cEnvironment, "close", environment_close, 0);
+  rb_define_method(cEnvironment, "stat", environment_stat, 0);
+  rb_define_method(cEnvironment, "info", environment_info, 0);
+  rb_define_method(cEnvironment, "copy", environment_copy, 1);
+  rb_define_method(cEnvironment, "sync", environment_sync, -1);
+  rb_define_method(cEnvironment, "mapsize=", environment_set_mapsize, 1);
+  rb_define_method(cEnvironment, "set_flags", environment_set_flags, -1);
+  rb_define_method(cEnvironment, "clear_flags", environment_clear_flags, -1);
+  rb_define_method(cEnvironment, "flags", environment_flags, 0);
+  rb_define_method(cEnvironment, "path", environment_path, 0);
+  rb_define_method(cEnvironment, "transaction", environment_transaction, -1);
+  /*
+    #ifdef HAVE_RB_GC_MARK_MOVABLE
+    rb_define_method(cEnvironment, "rb_gc_compact", environment_compact_m, 0);
+    #endif
+  */
 
-        /**
-         * Document-class: LMDB::Database
-         *
-         * An LMDB Database is a table of key-value pairs.  It is stored as
-         * part of the {Environment}.
-         *
-         * By default, each key in a Database maps to one value.  However, a
-         * Database can be configured at creation to allow duplicate keys, in
-         * which case one key will map to multiple values.
-         *
-         * A Database stores the keys in a sorted order.  The order can also
-         * be set with options when the database is created.
-         *
-         * The basic operations on a database are to {#put}, {#get}, and
-         * {#delete} records.  One can also iterate through the records in a
-         * database using a {Cursor}.
-         *
-         * @example Typical usage
-         *    env = LMDB.new "databasedir"
-         *    db = env.database "databasename"
-         *    db.put "key1", "value1"
-         *    db.put "key2", "value2"
-         *    db.get "key1"              #=> "value1"
-         *    env.close
-         */
-        cDatabase = rb_define_class_under(mLMDB, "Database", rb_cObject);
-        rb_undef_alloc_func(cDatabase);
-        rb_undef_method(rb_singleton_class(cDatabase), "new");
-        rb_define_method(cDatabase, "stat", database_stat, 0);
-        rb_define_method(cDatabase, "flags", database_get_flags, 0);
-        rb_define_method(cDatabase, "dupsort?", database_is_dupsort, 0);
-        rb_define_method(cDatabase, "dupfixed?", database_is_dupfixed, 0);
-        rb_define_method(cDatabase, "drop", database_drop, 0);
-        rb_define_method(cDatabase, "clear", database_clear, 0);
-        rb_define_method(cDatabase, "get", database_get, 1);
-        rb_define_method(cDatabase, "put", database_put, -1);
-        rb_define_method(cDatabase, "delete", database_delete, -1);
-        rb_define_method(cDatabase, "cursor", database_cursor, 0);
-        rb_define_method(cDatabase, "env", database_env, 0);
-#ifdef HAVE_RB_GC_MARK_MOVABLE
-        rb_define_method(cDatabase, "rb_gc_compact", database_compact_m, 0);
-#endif
-        /**
-         * Document-class: LMDB::Transaction
-         *
-         * The LMDB environment supports transactional reads and updates.  By
-         * default, these provide the standard ACID (atomicity, consistency,
-         * isolation, durability) behaviors.
-         *
-         * Transactions can be committed or aborted.  When a transaction is
-         * committed, all its effects take effect in the database atomically.
-         * When a transaction is aborted, none of its effects take effect.
-         *
-         * Transactions span the entire environment.  All the updates made in
-         * the course of an update transaction -- writing records across all
-         * databases, creating databases, and destroying databases -- are
-         * either completed atomically or rolled back.
-         *
-         * Transactions can be nested.  A child transaction can be started
-         * within a parent transaction.  The child transaction can commit or
-         * abort, at which point the effects of the child become visible to
-         * the parent transaction or not.  If the parent aborts, all of the
-         * changes performed in the context of the parent -- including the
-         * changes from a committed child transaction -- are rolled back.
-         *
-         * To create a transaction, call {Environment#transaction} and supply
-         * a block for the code to execute in that transaction.
-         *
-         * @example Typical usage
-         *    env = LMDB.new "databasedir"
-         *    db1 = env.database "database1"
-         *    env.transaction do |parent|
-         *      db2 = env.database "database2", :create => true
-         *                            #=> creates a new database, but it isn't
-         *                            #=> yet committed to storage
-         *      db1['x']              #=> nil
-         *      env.transaction do |child1|
-         *        db2['a'] = 'b'
-         *        db1['x'] = 'y'
-         *      end
-         *                            #=> first child transaction commits
-         *                            #=> changes are visible within the parent transaction
-         *                            #=> but are not yet permanent
-         *      db1['x']              #=> 'y'
-         *      db2['a']              #=> 'a'
-         *      env.transaction do |child2|
-         *        db2['a'] = 'def'
-         *        db1['x'] = 'ghi'
-         *        child2.abort
-         *                            #=> second child transaction aborts and rolls
-         *                            #=> back its changes
-         *      end
-         *      db1['x']              #=> 'y'
-         *      db2['a']              #=> 'a'
-         *    end
-         *                            #=> parent transaction commits and writes database2
-         *                            #=> and the updates from transaction child1 to
-         *                            #=> storage.
-         */
-        cTransaction = rb_define_class_under(mLMDB, "Transaction", rb_cObject);
-        rb_undef_alloc_func(cTransaction);
-        rb_undef_method(rb_singleton_class(cTransaction), "new");
-        rb_define_method(cTransaction, "commit", transaction_commit, 0);
-        rb_define_method(cTransaction, "abort", transaction_abort, 0);
-        rb_define_method(cTransaction, "env", transaction_env, 0);
-        rb_define_method(cTransaction, "readonly?", transaction_is_readonly, 0);
-        rb_define_method(cTransaction, "finished?", transaction_is_finished, 0);
-        rb_define_method(cTransaction, "error?", transaction_is_error, 0);
-#ifdef HAVE_RB_GC_MARK_MOVABLE
-        rb_define_method(cTransaction, "rb_gc_compact", transaction_compact_m, 0);
-#endif
-        /**
-         * Document-class: LMDB::Cursor
-         *
-         * A Cursor points to records in a database, and is used to iterate
-         * through the records in the database.
-         *
-         * Cursors are created in the context of a transaction, and should
-         * only be used as long as that transaction is active.  In other words,
-         * after you {Transaction#commit} or {Transaction#abort} a transaction,
-         * the cursors created while that transaction was active are no longer
-         * usable.
-         *
-         * To create a cursor, call {Database#cursor} and pass it a block for
-         * that should be performed using the cursor.
-         *
-         * @example Typical usage
-         *    env = LMDB.new "databasedir"
-         *    db = env.database "databasename"
-         *    db.cursor do |cursor|
-         *      rl = cursor.last           #=> content of the last record
-         *      r1 = cursor.first          #=> content of the first record
-         *      r2 = cursor.next           #=> content of the second record
-         *      cursor.put "x", "y", current: true
-         *                                 #=> replaces the second record with a new value "y"
-         *    end
-         */
-        cCursor = rb_define_class_under(mLMDB, "Cursor", rb_cObject);
-        rb_undef_alloc_func(cCursor);
-        rb_undef_method(rb_singleton_class(cCursor), "new");
-        rb_define_method(cCursor, "close", cursor_close, 0);
-        rb_define_method(cCursor, "get", cursor_get, 0);
-        rb_define_method(cCursor, "first", cursor_first, 0);
-        rb_define_method(cCursor, "last", cursor_last, 0);
-        rb_define_method(cCursor, "next", cursor_next, -1);
-        rb_define_method(cCursor, "next_range", cursor_next_range, 1);
-        rb_define_method(cCursor, "prev", cursor_prev, 0);
-        rb_define_method(cCursor, "set", cursor_set, -1);
-        rb_define_method(cCursor, "set_range", cursor_set_range, 1);
-        rb_define_method(cCursor, "put", cursor_put, -1);
-        rb_define_method(cCursor, "count", cursor_count, 0);
-        rb_define_method(cCursor, "delete", cursor_delete, -1);
-        rb_define_method(cCursor, "database", cursor_db, 0);
-#ifdef HAVE_RB_GC_MARK_MOVABLE
-        rb_define_method(cCursor, "rb_gc_compact", cursor_compact_m, 0);
-#endif
+  /**
+   * Document-class: LMDB::Database
+   *
+   * An LMDB Database is a table of key-value pairs.  It is stored as
+   * part of the {Environment}.
+   *
+   * By default, each key in a Database maps to one value.  However, a
+   * Database can be configured at creation to allow duplicate keys, in
+   * which case one key will map to multiple values.
+   *
+   * A Database stores the keys in a sorted order.  The order can also
+   * be set with options when the database is created.
+   *
+   * The basic operations on a database are to {#put}, {#get}, and
+   * {#delete} records.  One can also iterate through the records in a
+   * database using a {Cursor}.
+   *
+   * @example Typical usage
+   *    env = LMDB.new "databasedir"
+   *    db = env.database "databasename"
+   *    db.put "key1", "value1"
+   *    db.put "key2", "value2"
+   *    db.get "key1"              #=> "value1"
+   *    env.close
+   */
+  cDatabase = rb_define_class_under(mLMDB, "Database", rb_cObject);
+  rb_undef_alloc_func(cDatabase);
+  rb_undef_method(rb_singleton_class(cDatabase), "new");
+  rb_define_method(cDatabase, "stat", database_stat, 0);
+  rb_define_method(cDatabase, "flags", database_get_flags, 0);
+  rb_define_method(cDatabase, "dupsort?", database_is_dupsort, 0);
+  rb_define_method(cDatabase, "dupfixed?", database_is_dupfixed, 0);
+  rb_define_method(cDatabase, "drop", database_drop, 0);
+  rb_define_method(cDatabase, "clear", database_clear, 0);
+  rb_define_method(cDatabase, "get", database_get, 1);
+  rb_define_method(cDatabase, "put", database_put, -1);
+  rb_define_method(cDatabase, "delete", database_delete, -1);
+  rb_define_method(cDatabase, "cursor", database_cursor, 0);
+  rb_define_method(cDatabase, "env", database_env, 0);
+  /*
+    #ifdef HAVE_RB_GC_MARK_MOVABLE
+    rb_define_method(cDatabase, "rb_gc_compact", database_compact_m, 0);
+    #endif
+  */
+  /**
+   * Document-class: LMDB::Transaction
+   *
+   * The LMDB environment supports transactional reads and updates.  By
+   * default, these provide the standard ACID (atomicity, consistency,
+   * isolation, durability) behaviors.
+   *
+   * Transactions can be committed or aborted.  When a transaction is
+   * committed, all its effects take effect in the database atomically.
+   * When a transaction is aborted, none of its effects take effect.
+   *
+   * Transactions span the entire environment.  All the updates made in
+   * the course of an update transaction -- writing records across all
+   * databases, creating databases, and destroying databases -- are
+   * either completed atomically or rolled back.
+   *
+   * Transactions can be nested.  A child transaction can be started
+   * within a parent transaction.  The child transaction can commit or
+   * abort, at which point the effects of the child become visible to
+   * the parent transaction or not.  If the parent aborts, all of the
+   * changes performed in the context of the parent -- including the
+   * changes from a committed child transaction -- are rolled back.
+   *
+   * To create a transaction, call {Environment#transaction} and supply
+   * a block for the code to execute in that transaction.
+   *
+   * @example Typical usage
+   *    env = LMDB.new "databasedir"
+   *    db1 = env.database "database1"
+   *    env.transaction do |parent|
+   *      db2 = env.database "database2", :create => true
+   *                            #=> creates a new database, but it isn't
+   *                            #=> yet committed to storage
+   *      db1['x']              #=> nil
+   *      env.transaction do |child1|
+   *        db2['a'] = 'b'
+   *        db1['x'] = 'y'
+   *      end
+   *                            #=> first child transaction commits
+   *                            #=> changes are visible within the parent transaction
+   *                            #=> but are not yet permanent
+   *      db1['x']              #=> 'y'
+   *      db2['a']              #=> 'a'
+   *      env.transaction do |child2|
+   *        db2['a'] = 'def'
+   *        db1['x'] = 'ghi'
+   *        child2.abort
+   *                            #=> second child transaction aborts and rolls
+   *                            #=> back its changes
+   *      end
+   *      db1['x']              #=> 'y'
+   *      db2['a']              #=> 'a'
+   *    end
+   *                            #=> parent transaction commits and writes database2
+   *                            #=> and the updates from transaction child1 to
+   *                            #=> storage.
+   */
+  cTransaction = rb_define_class_under(mLMDB, "Transaction", rb_cObject);
+  rb_undef_alloc_func(cTransaction);
+  rb_undef_method(rb_singleton_class(cTransaction), "new");
+  rb_define_method(cTransaction, "commit", transaction_commit, 0);
+  rb_define_method(cTransaction, "abort", transaction_abort, 0);
+  rb_define_method(cTransaction, "env", transaction_env, 0);
+  rb_define_method(cTransaction, "readonly?", transaction_is_readonly, 0);
+  rb_define_method(cTransaction, "finished?", transaction_is_finished, 0);
+  rb_define_method(cTransaction, "error?", transaction_is_error, 0);
+  /*
+    #ifdef HAVE_RB_GC_MARK_MOVABLE
+    rb_define_method(cTransaction, "rb_gc_compact", transaction_compact_m, 0);
+    #endif*/
+  /**
+   * Document-class: LMDB::Cursor
+   *
+   * A Cursor points to records in a database, and is used to iterate
+   * through the records in the database.
+   *
+   * Cursors are created in the context of a transaction, and should
+   * only be used as long as that transaction is active.  In other words,
+   * after you {Transaction#commit} or {Transaction#abort} a transaction,
+   * the cursors created while that transaction was active are no longer
+   * usable.
+   *
+   * To create a cursor, call {Database#cursor} and pass it a block for
+   * that should be performed using the cursor.
+   *
+   * @example Typical usage
+   *    env = LMDB.new "databasedir"
+   *    db = env.database "databasename"
+   *    db.cursor do |cursor|
+   *      rl = cursor.last           #=> content of the last record
+   *      r1 = cursor.first          #=> content of the first record
+   *      r2 = cursor.next           #=> content of the second record
+   *      cursor.put "x", "y", current: true
+   *                                 #=> replaces the second record with a new value "y"
+   *    end
+   */
+  cCursor = rb_define_class_under(mLMDB, "Cursor", rb_cObject);
+  rb_undef_alloc_func(cCursor);
+  rb_undef_method(rb_singleton_class(cCursor), "new");
+  rb_define_method(cCursor, "close", cursor_close, 0);
+  rb_define_method(cCursor, "get", cursor_get, 0);
+  rb_define_method(cCursor, "first", cursor_first, 0);
+  rb_define_method(cCursor, "last", cursor_last, 0);
+  rb_define_method(cCursor, "next", cursor_next, -1);
+  rb_define_method(cCursor, "next_range", cursor_next_range, 1);
+  rb_define_method(cCursor, "prev", cursor_prev, 0);
+  rb_define_method(cCursor, "set", cursor_set, -1);
+  rb_define_method(cCursor, "set_range", cursor_set_range, 1);
+  rb_define_method(cCursor, "put", cursor_put, -1);
+  rb_define_method(cCursor, "count", cursor_count, 0);
+  rb_define_method(cCursor, "delete", cursor_delete, -1);
+  rb_define_method(cCursor, "database", cursor_db, 0);
+  /*
+    #ifdef HAVE_RB_GC_MARK_MOVABLE
+    rb_define_method(cCursor, "rb_gc_compact", cursor_compact_m, 0);
+    #endif
+  */
 }
