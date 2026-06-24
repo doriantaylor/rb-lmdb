@@ -55,7 +55,7 @@ static void transaction_free(void* ptr) {
 static void transaction_mark(void* ptr) {
   Transaction *transaction = (Transaction *)ptr;
   if (transaction) {
-    GC_MARK_MOVABLE(transaction->env);
+    GC_MARK(transaction->env);
     GC_MARK_MOVABLE(transaction->parent);
     GC_MARK_MOVABLE(transaction->child);
     GC_MARK_MOVABLE(transaction->thread);
@@ -365,6 +365,16 @@ static void *call_txn_begin(void *arg) {
     txn_args->result = mdb_txn_begin(txn_args->env, txn_args->parent,
                                      txn_args->flags, txn_args->htxn);
   }
+  else if (txn_args->flags & MDB_RDONLY && txn_args->result == EAGAIN) {
+    int dead = 0;
+    check(mdb_reader_check(txn_args->env, &dead));
+
+    if (dead > 0)
+      rb_warn("LMDB: Cleared %d dead readers.");
+
+    txn_args->result = mdb_txn_begin(txn_args->env, txn_args->parent,
+                                     txn_args->flags, txn_args->htxn);
+  }
   return (void *)NULL;
 }
 
@@ -514,6 +524,13 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
         call_txn_begin(&txn_args);
       }
       else {
+        // before CALL_WITHOUT_GVL:
+        /*
+        MDB_envinfo info;
+        mdb_env_info(environment->env, &info);
+        rb_warn("before txn_begin: last_txnid=%zu, numreaders=%u",
+                (size_t)info.me_last_txnid, info.me_numreaders);
+        */
         // try to acquire the new transaction
         CALL_WITHOUT_GVL(call_txn_begin, &txn_args, stop_txn_begin, &txn_args);
 
@@ -524,10 +541,30 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
             mdb_txn_abort(txn);
             txn_args.result = 0;
           }
+
+          // static int txn_attempt = 0;
           if (txn_args.result != 0 && txn_args.result != MDB_MAP_RESIZED) {
-            /* a real error, not a GVL interruption — stop retrying */
+            /*
+            rb_warn("mdb_txn_begin failed (#%d): %s (parent=%p, env=%p)",
+                    ++txn_attempt,
+                    mdb_strerror(txn_args.result),
+                    (void*)txn_args.parent,
+                    (void*)txn_args.env);
+            */
+            // a real error, not a GVL interruption — stop retrying
             check(txn_args.result);
           }
+
+          /*
+          if (txn_args.result != 0) {
+            MDB_envinfo info;
+            mdb_env_info(environment->env, &info);
+            rb_warn("after EINVAL: last_txnid=%zu, numreaders=%u, result=%s",
+            (size_t)info.me_last_txnid, info.me_numreaders,
+                    mdb_strerror(txn_args.result));
+          }
+          */
+
           /*
           if (txn_args.result != 0)
             rb_warn("mdb_txn_begin failed: %s (parent=%p, env=%p)",
@@ -615,9 +652,9 @@ static void environment_free(void* ptr) {
 static void environment_mark(void *ptr) {
   Environment *environment = (Environment *)ptr;
   if (environment) {
-    GC_MARK_MOVABLE(environment->thread_txn_hash);
-    GC_MARK_MOVABLE(environment->txn_thread_hash);
-    GC_MARK_MOVABLE(environment->rw_txn_thread);
+    GC_MARK(environment->thread_txn_hash);
+    GC_MARK(environment->txn_thread_hash);
+    GC_MARK(environment->rw_txn_thread);
   }
 }
 

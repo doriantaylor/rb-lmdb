@@ -1,6 +1,7 @@
 #ifndef _LMDB_EXT_H
 #define _LMDB_EXT_H
 
+#include <errno.h>
 #include "ruby.h"
 #include "lmdb.h"
 
@@ -117,6 +118,9 @@ static VALUE cEnvironment, cDatabase, cTransaction, cCursor, cError;
 #define ERROR(name) static VALUE cError_##name;
 #include "errors.h"
 #undef ERROR
+
+#define GC_MARK(val) \
+    do { if ((val) && !NIL_P(val)) rb_gc_mark_movable(val); } while(0)
 
 #ifdef HAVE_RB_GC_MARK_MOVABLE
 #define GC_MARK_MOVABLE(val) \
