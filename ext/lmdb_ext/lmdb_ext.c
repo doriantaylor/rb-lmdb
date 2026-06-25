@@ -236,8 +236,6 @@ static void transaction_finish(VALUE self, int commit) {
   if (!transaction->txn)
     rb_raise(cError, "Transaction is already terminated");
 
-  int ret = 0;
-
   /* pseudo-transactions are transparent wrappers around a parent;
      commit/abort are no-ops since the parent owns the real txn */
 
@@ -267,12 +265,17 @@ static void transaction_finish(VALUE self, int commit) {
     clear_cursors(transaction);
 
     // now actually finish the internal transaction
+    if (!commit || (transaction->flags & MDB_RDONLY))
+      mdb_txn_abort(transaction->txn);
+    else
+      check(mdb_txn_commit(transaction->txn));
+
+    /*
     if (commit)
-      ret = mdb_txn_commit(transaction->txn);
+      check(mdb_txn_commit(transaction->txn));
     else
       mdb_txn_abort(transaction->txn);
-
-    check(ret);
+    */
 
     // eliminate child transactions
     if (REXISTS(transaction->child)) {
@@ -294,6 +297,7 @@ static void transaction_finish(VALUE self, int commit) {
         p = txn->parent;
       }
     }
+
     transaction->txn = 0;
   }
 

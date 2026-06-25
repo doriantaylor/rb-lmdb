@@ -1,3 +1,20 @@
+0.8.0
+
+  * overhauled internals to use newer `TypedData` conventions
+  * made pseudo-transactions for behaviour parity ofr read-only transactions
+  * rewrote `with_transaction` and `transaction_finish` etc
+  * made `env.database(:symbol_for_a_name)` not segfault
+  * added `env['foo']` (or `env[:foo]`) accessor for existing databases
+  * added `env.reader_check` to wipe out stale readers
+  * added `env.reader_list` to list them
+  * added unit tests for GC torture
+  * added unit tests for nested pseudo-transactions
+
+0.7.5
+
+  * changed embedding regime for upstream lmdb
+  * added --vendor-lmdb build flag (`gem install lmdb -- --vendor-lmdb`)
+
 0.7.0
 
   * Nesting read-only transactions finally works, by making it a noop
