@@ -8,107 +8,108 @@ describe LMDB do
   let(:db)  { env.database }
 
   it 'has version constants' do
-    LMDB::LIB_VERSION_MAJOR.should be_instance_of(Integer)
-    LMDB::LIB_VERSION_MINOR.should be_instance_of(Integer)
-    LMDB::LIB_VERSION_PATCH.should be_instance_of(Integer)
-    LMDB::LIB_VERSION.should be_instance_of(String)
-    LMDB::VERSION.should be_instance_of(String)
+    expect(LMDB::LIB_VERSION_MAJOR).to be_instance_of(Integer)
+    expect(LMDB::LIB_VERSION_MINOR).to be_instance_of(Integer)
+    expect(LMDB::LIB_VERSION_PATCH).to be_instance_of(Integer)
+    expect(LMDB::LIB_VERSION).to be_instance_of(String)
+    expect(LMDB::VERSION).to be_instance_of(String)
   end
 
   describe LMDB::Environment do
     subject { env }
 
     it 'should return flags' do
-      subject.flags.should be_instance_of(Array)
+      expect(subject.flags).to be_instance_of(Array)
     end
 
     describe 'new' do
       it 'returns environment' do
         env = LMDB::Environment.new(path)
-        env.should be_instance_of(described_class)
+        expect(env).to be_instance_of(described_class)
         env.close
       end
 
       it 'accepts block' do
-        LMDB::Environment.new(path) do |env|
-          env.should be_instance_of(described_class)
+        out = LMDB::Environment.new(path) do |env|
+          expect(env).to be_instance_of(described_class)
           42
-        end.should == 42
+        end
+        expect(out).to eq(42)
       end
 
       it 'accepts options' do
         env = LMDB::Environment.new(path, nosync: true, mode: 0777,
           maxreaders: 777, mapsize: 111111, maxdbs: 666)
-        env.should be_instance_of(described_class)
-        env.info[:maxreaders].should eq(777)
-        env.info[:mapsize].should eq(111111)
-        env.flags.should include(:nosync)
+        expect(env).to be_instance_of(described_class)
+        expect(env.info[:maxreaders]).to eq(777)
+        expect(env.info[:mapsize]).to eq(111111)
+        expect(env.flags.include? :nosync).to be_truthy
         env.close
 
-        env = LMDB::Environment.new(path, :nosync => false)
-        env.flags.should_not include(:nosync)
+        env = LMDB::Environment.new(path, nosync: false)
+        expect(env.flags.include? :nosync).to be_falsy
         env.close
       end
     end
 
     it 'should return stat' do
       stat = env.stat
-      stat[:psize].should be_instance_of(Integer)
-      stat[:depth].should be_instance_of(Integer)
-      stat[:branch_pages].should be_instance_of(Integer)
-      stat[:leaf_pages].should be_instance_of(Integer)
-      stat[:overflow_pages].should be_instance_of(Integer)
-      stat[:entries].should be_instance_of(Integer)
+      expect(stat[:psize]).to be_instance_of(Integer)
+      expect(stat[:depth]).to be_instance_of(Integer)
+      expect(stat[:branch_pages]).to be_instance_of(Integer)
+      expect(stat[:leaf_pages]).to be_instance_of(Integer)
+      expect(stat[:overflow_pages]).to be_instance_of(Integer)
+      expect(stat[:entries]).to be_instance_of(Integer)
     end
 
     it 'should return info' do
       info = env.info
-      info[:mapaddr].should be_instance_of(Integer)
-      info[:mapsize].should be_instance_of(Integer)
-      info[:last_pgno].should be_instance_of(Integer)
-      info[:last_txnid].should be_instance_of(Integer)
-      info[:maxreaders].should be_instance_of(Integer)
-      info[:numreaders].should be_instance_of(Integer)
+      expect(info[:mapaddr]).to be_instance_of(Integer)
+      expect(info[:mapsize]).to be_instance_of(Integer)
+      expect(info[:last_pgno]).to be_instance_of(Integer)
+      expect(info[:last_txnid]).to be_instance_of(Integer)
+      expect(info[:maxreaders]).to be_instance_of(Integer)
+      expect(info[:numreaders]).to be_instance_of(Integer)
     end
 
     it 'should set mapsize' do
       size_before = env.info[:mapsize]
       env.mapsize = size_before * 2
-      env.info[:mapsize].should eq(size_before * 2)
+      expect(env.info[:mapsize]).to eq(size_before * 2)
     end
 
     it 'should copy' do
       target = mkpath('copy')
-      subject.copy(target).should be_nil
+      expect(subject.copy(target)).to be_nil
     end
 
     it 'should sync' do
-      subject.sync.should be_nil
+      expect(subject.sync).to be_nil
     end
 
     it 'should force-sync' do
-      subject.sync(true).should be_nil
+      expect(subject.sync(true)).to be_nil
     end
 
     it 'should accept custom flags' do
-      subject.flags.should_not include(:nosync)
+      expect(subject.flags.include? :nosync).to be_falsy
 
       subject.set_flags :nosync
-      subject.flags.should include(:nosync)
+      expect(subject.flags.include? :nosync).to be_truthy
 
       subject.clear_flags :nosync
-      subject.flags.should_not include(:nosync)
+      expect(subject.flags.include? :nosync).to be_falsy
     end
 
     describe 'databases' do
       it 'returns empty list when there are no named databases' do
-        subject.databases.should == []
+        expect(subject.databases).to eq([])
       end
 
       it 'returns list of named databases' do
         db1 = subject.database 'db1', create: true
         db2 = subject.database 'db2', create: true
-        subject.databases.should eq(['db1', 'db2'])
+        expect(subject.databases).to eq(['db1', 'db2'])
       end
 
       it 'returns list of named databases when there are non-database kes in the main db' do
@@ -117,7 +118,7 @@ describe LMDB do
         subject.database 'db1', create: true
         subject.database 'db2', create: true
 
-        subject.databases.should eq(['db1', 'db2'])
+        expect(subject.databases).to eq(['db1', 'db2'])
       end
     end
 
@@ -125,71 +126,71 @@ describe LMDB do
       subject { env }
 
       it 'should create transactions' do
-        subject.active_txn.should be_nil
+        expect(subject.active_txn).to be_nil
         subject.transaction do |txn|
-          subject.active_txn.should eq(txn)
-          txn.should be_instance_of(described_class)
+          expect(subject.active_txn).to eq(txn)
+          expect(txn).to be_instance_of(described_class)
           txn.abort
-          subject.active_txn.should be_nil
+          expect(subject.active_txn).to be_nil
         end
-        subject.active_txn.should be_nil
+        expect(subject.active_txn).to be_nil
       end
 
       it 'should create read-only transactions' do
-        subject.active_txn.should be_nil
+        expect(subject.active_txn).to be_nil
         subject.transaction(true) do |txn|
-          subject.active_txn.should eq(txn)
-          txn.should be_instance_of(described_class)
+          expect(subject.active_txn).to eq(txn)
+          expect(txn).to be_instance_of(described_class)
           txn.abort
-          subject.active_txn.should be_nil
+          expect(subject.active_txn).to be_nil
         end
-        subject.active_txn.should be_nil
+        expect(subject.active_txn).to be_nil
       end
 
       it 'can create child transactions' do
-        subject.active_txn.should be_nil
+        expect(subject.active_txn).to be_nil
         env.transaction do |txn|
-          subject.active_txn.should eq(txn)
+          expect(subject.active_txn).to eq(txn)
           env.transaction do |ctxn|
-            subject.active_txn.should eq(ctxn)
+            expect(subject.active_txn).to eq(ctxn)
             ctxn.abort
-            subject.active_txn.should eq(txn)
+            expect(subject.active_txn).to eq(txn)
           end
-          subject.active_txn.should eq(txn)
+          expect(subject.active_txn).to eq(txn)
         end
-        subject.active_txn.should be_nil
+        expect(subject.active_txn).to be_nil
       end
 
       it 'should support aborting parent transaction' do
-        subject.active_txn.should be_nil
+        expect(subject.active_txn).to be_nil
         env.transaction do |txn|
-          subject.active_txn.should eq(txn)
+          expect(subject.active_txn).to eq(txn)
           env.transaction do |ctxn|
-            subject.active_txn.should eq(ctxn)
+            expect(subject.active_txn).to eq(ctxn)
             db['key'] = 'value'
             txn.abort
-            subject.active_txn.should be_nil
+            expect(subject.active_txn).to be_nil
           end
-          subject.active_txn.should be_nil
+          expect(subject.active_txn).to be_nil
         end
-        db['key'].should be_nil
-        subject.active_txn.should be_nil
+        expect(db['key']).to be_nil
+        expect(subject.active_txn).to be_nil
       end
 
       it 'should support comitting parent transaction' do
-        subject.active_txn.should be_nil
+        expect(subject.active_txn).to be_nil
         env.transaction do |txn|
-          subject.active_txn.should eq(txn)
+          expect(subject.active_txn).to eq(txn)
           env.transaction do |ctxn|
-            subject.active_txn.should eq(ctxn)
+            expect(subject.active_txn).to eq(ctxn)
             db['key'] = 'value'
             txn.commit
-            subject.active_txn.should be_nil
+            expect(subject.active_txn).to be_nil
           end
-          subject.active_txn.should be_nil
+          expect(subject.active_txn).to be_nil
         end
-        db['key'].should eq('value')
-        subject.active_txn.should be_nil
+        expect(db['key']).to eq('value')
+        expect(subject.active_txn).to be_nil
       end
 
       it 'should get environment' do
@@ -197,7 +198,7 @@ describe LMDB do
         env.transaction do |txn|
           env2 = txn.env
         end
-        env2.should eq(env)
+        expect(env2).to eq(env)
       end
     end
   end
@@ -206,9 +207,9 @@ describe LMDB do
     subject { db }
 
     it 'should return flags' do
-      subject.flags.should be_instance_of(Hash)
-      subject.dupsort?.should be_falsy
-      subject.dupfixed?.should be_falsy
+      expect(subject.flags).to be_instance_of(Hash)
+      expect(subject.dupsort?).to be_falsy
+      expect(subject.dupfixed?).to be_falsy
     end
 
     it 'should support named databases' do
@@ -222,59 +223,62 @@ describe LMDB do
       db1['key'] = '2'
       db2['key'] = '3'
 
-      main['key'].should eq(?1)
-      db1['key'].should  eq(?2)
-      db2['key'].should  eq(?3)
+      expect(main['key']).to eq(?1)
+      expect(db1['key']).to  eq(?2)
+      expect(db2['key']).to  eq(?3)
     end
 
     it 'should get/put data' do
-      subject.get('cat').should be_nil
-      subject.put('cat', 'garfield').should be_nil
-      subject.get('cat').should eq('garfield')
+      expect(subject.get 'cat').to be_nil
+      expect(subject.put 'cat', 'garfield').to be_nil
+      expect(subject.get 'cat').to eq('garfield')
 
       # check for key-value pairs on non-dupsort database
-      subject.has?('cat', 'garfield').should be_truthy
-      subject.has?('cat', 'heathcliff').should be_falsy
+      expect(subject.has? 'cat', 'garfield').to be_truthy
+      expect(subject.has? 'cat', 'heathcliff').to be_falsy
 
       subject.put?('dog', 'odie')
-      subject.has?('dog', 'odie').should be_truthy
+      expect(subject.has? 'dog', 'odie').to be_truthy
     end
 
     it 'should delete by key' do
-      proc { subject.delete('cat') }.should raise_error(LMDB::Error::NOTFOUND)
-      proc { subject.delete('cat', 'garfield') }.should raise_error(LMDB::Error::NOTFOUND)
+      expect { subject.delete('cat') }.to raise_error(LMDB::Error::NOTFOUND)
+      expect {
+        subject.delete 'cat', 'garfield'
+      }.to raise_error(LMDB::Error::NOTFOUND)
 
       subject.put('cat', 'garfield')
-      subject.delete('cat').should be_nil
-      proc { subject.delete('cat') }.should raise_error(LMDB::Error::NOTFOUND)
+      expect(subject.delete 'cat').to be_nil
+      expect { subject.delete 'cat' }.to raise_error(LMDB::Error::NOTFOUND)
 
       subject.put('cat', 'garfield')
-      subject.delete('cat', 'garfield').should be_nil
-      proc { subject.delete('cat', 'garfield') }.should raise_error(LMDB::Error::NOTFOUND)
+      expect(subject.delete 'cat', 'garfield').to be_nil
+      expect {
+        subject.delete 'cat', 'garfield' }.to raise_error(LMDB::Error::NOTFOUND)
 
       # soft delete
-      subject.delete?('cat', 'heathcliff').should be_nil
+      expect(subject.delete? 'cat', 'heathcliff').to be_nil
     end
 
     it 'stores key/values in same transaction' do
-      db.put('key', 'value').should be_nil
-      db.get('key').should eq('value')
+      expect(db.put 'key', 'value').to be_nil
+      expect(db.get 'key').to eq('value')
     end
 
     it 'stores key/values in different transactions' do
       env.transaction do
-        db.put('key', 'value').should be_nil
-        db.put('key2', 'value2').should be_nil
+        expect(db.put 'key', 'value').to be_nil
+        expect(db.put 'key2', 'value2').to be_nil
         env.transaction do
-          db.put('key3', 'value3').should be_nil
+          expect(db.put 'key3', 'value3').to be_nil
         end
       end
 
       env.transaction do
-        db.get('key').should eq('value')
-        db.get('key2').should eq('value2')
+        expect(db.get 'key').to eq('value')
+        expect(db.get 'key2').to eq('value2')
         env.transaction do
-          db.get('key3').should eq('value3')
+          expect(db.get 'key3').to eq('value3')
         end
       end
     end
@@ -285,30 +289,30 @@ describe LMDB do
         break
       end
 
-      db.get('key4').should eq('value4')
+      expect(db.get 'key4').to eq('value4')
     end
 
     it 'should return stat' do
-      db.stat.should be_instance_of(Hash)
+      expect(db.stat).to be_instance_of(Hash)
     end
 
     it 'should return size' do
-      db.size.should eq(0)
+      expect(db.size).to eq(0)
       db.put('key', 'value')
-      db.size.should eq(1)
+      expect(db.size).to eq(1)
       db.put('key2', 'value2')
-      db.size.should eq(2)
+      expect(db.size).to eq(2)
     end
 
     it 'should be enumerable' do
       db['k1'] = 'v1'
       db['k2'] = 'v2'
-      db.to_a.should eq([['k1', 'v1'], ['k2', 'v2']])
+      expect(db.to_a).to eq([['k1', 'v1'], ['k2', 'v2']])
     end
 
     it 'should have shortcuts' do
       db['key'] = 'value'
-      db['key'].should eq('value')
+      expect(db['key']).to eq('value')
     end
 
     it 'should store binary' do
@@ -316,21 +320,21 @@ describe LMDB do
       bin2 = "\xAAx\BB\xCC2"
       db[bin1] = bin2
       db['key'] = bin2
-      db[bin1].should eq(bin2)
-      db['key'].should eq(bin2)
+      expect(db[bin1]).to eq(bin2)
+      expect(db['key']).to eq(bin2)
     end
 
     it 'should get environment' do
       main = env.database
       db1 = env.database('db1', create: true)
-      main.env.should eq(env)
-      db1.env.should eq(env)
+      expect(main.env).to eq(env)
+      expect(db1.env).to eq(env)
     end
 
     it 'should iterate over/list keys' do
       db['k1'] = 'v1'
       db['k2'] = 'v2'
-      db.keys.sort.should == %w[k1 k2]
+      expect(db.keys.sort).to eq(%w[k1 k2])
     end
   end
 
@@ -342,38 +346,38 @@ describe LMDB do
 
     it 'should get first key/value' do
       db.cursor do |c|
-        c.first.should eq(['key1', 'value1'])
+        expect(c.first).to eq(['key1', 'value1'])
       end
     end
 
     it 'should get last key/value' do
       db.cursor do |c|
-        c.last.should eq(['key2', 'value2'])
+        expect(c.last).to eq(['key2', 'value2'])
       end
     end
 
     it 'should get next key/value' do
       db.cursor do |c|
         c.first
-        c.next.should eq(['key2', 'value2'])
+        expect(c.next).to eq(['key2', 'value2'])
       end
     end
 
     it 'should seek to key' do
       db.cursor do |c|
-        c.set('key1').should eq(['key1', 'value1'])
+        expect(c.set 'key1').to eq(['key1', 'value1'])
       end
     end
 
     it 'should seek to closest key' do
       db.cursor do |c|
-        c.set_range('key0').should eq(['key1', 'value1'])
+        expect(c.set_range 'key0').to eq(['key1', 'value1'])
       end
     end
 
     it 'should seek to key with nuls' do
       db.cursor do |c|
-        c.set_range('\x00').should eq(['key1', 'value1'])
+        expect(c.set_range '\x00').to eq(['key1', 'value1'])
       end
     end
 
@@ -381,8 +385,8 @@ describe LMDB do
       db.cursor do |c|
         db.put('key0', 'value0')
         c.first
-        c.next_range('key1').should eq(['key1', 'value1'])
-        c.next_range('key1').should be_nil
+        expect(c.next_range 'key1').to eq(['key1', 'value1'])
+        expect(c.next_range 'key1').to be_nil
       end
     end
 
@@ -390,35 +394,35 @@ describe LMDB do
       dupdb = env.database 'dupsort', create: true, dupsort: true
 
       # check flag while we're at it
-      dupdb.flags[:dupsort].should be_truthy
-      dupdb.dupsort?.should be_truthy
-      dupdb.dupfixed?.should be_falsy
+      expect(dupdb.flags[:dupsort]).to be_truthy
+      expect(dupdb.dupsort?).to be_truthy
+      expect(dupdb.dupfixed?).to be_falsy
 
       # add the no-op keyword to trigger a complaint from ruby 2.7
       dupdb.put 'key1', 'value1', nodupdata: false
       dupdb.put 'key1', 'value2'
       dupdb.put 'key2', 'value3'
       dupdb.cursor do |c|
-        c.set('key1', 'value2').should eq(['key1', 'value2'])
-        c.set('key1', 'value1').should eq(['key1', 'value1'])
-        c.set('key1', 'value3').should be_nil
+        expect(c.set 'key1', 'value2').to eq(['key1', 'value2'])
+        expect(c.set 'key1', 'value1').to eq(['key1', 'value1'])
+        expect(c.set 'key1', 'value3').to be_nil
       end
 
       # this should do nothing
-      dupdb.put?('key1', 'value1', nodupdata: true).should be_nil
+      expect(dupdb.put? 'key1', 'value1', nodupdata: true).to be_nil
 
       # this is basically an extended test of `cursor.set key, val`
-      dupdb.has?('key1', 'value1').should be_truthy
-      dupdb.has?('key1', 'value2').should be_truthy
-      dupdb.has?('key1', 'value0').should be_falsy
+      expect(dupdb.has? 'key1', 'value1').to be_truthy
+      expect(dupdb.has? 'key1', 'value2').to be_truthy
+      expect(dupdb.has? 'key1', 'value0').to be_falsy
 
       # match the contents of key1
-      dupdb.each_value('key1').to_a.sort.should eq(['value1', 'value2'])
+      expect(dupdb.each_value('key1').to_a.sort).to eq(['value1', 'value2'])
 
       # we should have two entries for key1
-      dupdb.cardinality('key1').should eq(2)
+      expect(dupdb.cardinality 'key1').to eq(2)
 
-      dupdb.each_key.to_a.sort.should eq(['key1', 'key2'])
+      expect(dupdb.each_key.to_a.sort).to eq(['key1', 'key2'])
 
       # XXX move this or whatever
       env.transaction do |t|
@@ -428,24 +432,24 @@ describe LMDB do
 
     it 'should complain setting a key-value pair without dupsort' do
       db.cursor do |c|
-        proc { c.set('key1', 'value1') }.should raise_error(LMDB::Error)
+        expect { c.set('key1', 'value1') }.to raise_error(LMDB::Error)
       end
     end
 
     it 'should raise without block or txn' do
-      proc { db.cursor.next }.should raise_error(LMDB::Error)
+      expect { db.cursor.next }.to raise_error(LMDB::Error)
     end
 
     it 'should raise outside txn' do
       c = nil
       env.transaction { c = db.cursor }
-      proc { c.next }.should raise_error(LMDB::Error)
+      expect { c.next }.to raise_error(LMDB::Error)
     end
 
     it 'should get database' do
       db2 = nil
       env.transaction { c = db.cursor; db2 = c.database }
-      db2.should eq(db)
+      expect(db2).to eq(db)
     end
 
     it 'should nest a read-only txn in a read-write' do
@@ -456,19 +460,19 @@ describe LMDB do
     end
 
     it 'should croak when cursor key is not given a string' do
-      proc do
+      expect do
         db.cursor do |c|
           c.set 1
         end
-      end.should raise_error(ArgumentError)
+      end.to raise_error(ArgumentError)
     end
 
     it 'should croak when cursor value is not given a string' do
-      proc do
+      expect do
         db.cursor do |c|
           c.set 'hi', 1
         end
-      end.should raise_error(ArgumentError)
+      end.to raise_error(ArgumentError)
     end
   end
 end

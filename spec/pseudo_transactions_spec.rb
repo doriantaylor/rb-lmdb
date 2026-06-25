@@ -6,7 +6,7 @@ require 'fileutils'
 
 RSpec.describe 'LMDB pseudo-transactions (RO nested inside RW)' do
   let(:path) { Dir.mktmpdir }
-  let(:env)  { LMDB.new(path) }
+  let(:env)  { LMDB.new(path, mapsize: 2**20) }
   let(:db)   { env.database('test', create: true) }
 
   before(:each) { db } # ensure db is opened inside a txn before tests run
