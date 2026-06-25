@@ -37,6 +37,10 @@ static void check(int code) {
   rb_raise(cError, "%s", err); /* fallback */
 }
 
+#ifndef REXISTS
+#define REXISTS(x) (x && !NIL_P(x))
+#endif
+
 static void transaction_free(void* ptr) {
   Transaction *transaction = (Transaction *)ptr;
   if (transaction) {
@@ -224,13 +228,14 @@ static void transaction_finish(VALUE self, int commit) {
 
   /* pseudo-transactions are transparent wrappers around a parent;
      commit/abort are no-ops since the parent owns the real txn */
+  /*
   if (transaction->flags & MDB_TXN_PSEUDO) {
     transaction->txn = NULL;
     environment_set_active_txn(transaction->env,
                                transaction->thread,
                                transaction->parent);
     return;
-  }
+    }*/
 
   if (transaction->thread != rb_thread_current())
     rb_raise(cError, "The thread closing the transaction "
@@ -256,10 +261,15 @@ static void transaction_finish(VALUE self, int commit) {
 
   // now actually finish the internal transaction
   int ret = 0;
-  if (commit)
+  if (transaction->flags & MDB_TXN_PSEUDO)
+    transaction->txn = NULL;
+  else if (commit)
     ret = mdb_txn_commit(transaction->txn);
   else
     mdb_txn_abort(transaction->txn);
+
+  // indiscriminate
+  transaction->txn = NULL;
 
   // eliminate child transactions
   if (transaction->child && !NIL_P(transaction->child)) {
@@ -290,11 +300,11 @@ static void transaction_finish(VALUE self, int commit) {
   }
 
   // no more active read-write transaction; unset the registry
-  if (!(transaction->flags & MDB_RDONLY) && !transaction->parent) {
-    ENVIRONMENT(transaction->env, &lmdb_environment_type, env);
+  // if (!(transaction->flags & MDB_RDONLY) && !transaction->parent) {
+    //ENVIRONMENT(transaction->env, &lmdb_environment_type, env);
     // maybe this should be Qnil, i dunno
-    env->rw_txn_thread = (VALUE)NULL;
-  }
+    //env->rw_txn_thread = (VALUE)NULL;
+  //}
 
   // now set the active transaction to the parent, if there is one
   environment_set_active_txn(transaction->env, transaction->thread,
@@ -446,7 +456,7 @@ static void stop_txn_begin(void *arg)
  *
  */
 
-static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flags) {
+static VALUE with_transaction_0(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flags) {
   ENVIRONMENT(venv, &lmdb_environment_type, environment);
 
   MDB_txn* txn;
@@ -649,7 +659,7 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE), VALUE arg, int flag
   }
 }
 
-static VALUE with_transaction_2(VALUE venv, VALUE(*fn)(VALUE),
+static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
                                 VALUE arg, int flags) {
   ENVIRONMENT(venv, &lmdb_environment_type, environment);
 
@@ -681,20 +691,24 @@ static VALUE with_transaction_2(VALUE venv, VALUE(*fn)(VALUE),
   if (flags & MDB_RDONLY)
     call_txn_begin(&txn_args);
   else if (tparent) {
-    // writable transaction thread must match current thread
-    if (tparent->thread != thread || environment->rw_txn_thread != thread)
-      rb_raise(cError, "Can't open a nested transaction on a different thread");
-
-    // also can't put a writable transaction under a read-only one
+    // can't put a writable transaction under a read-only one
     if (tparent->flags & MDB_RDONLY)
       rb_raise(cError, "Can't open an RW transaction under an RO");
+
+    // writable transaction thread must match current thread
+    if (!REXISTS(environment->rw_txn_thread))
+      rb_raise(cError, "INTERNAL: rw_txn_thread should not be NULL");
+
+    // what it says, lol
+    if (tparent->thread != thread || environment->rw_txn_thread != thread)
+      rb_raise(cError, "Can't open a nested transaction on a different thread");
 
     // we don't need to skirt the gvl since we already have the mutex
     call_txn_begin(&txn_args);
   }
   else {
     // this should be NULL since this is a top-level transaction
-    if (environment->rw_txn_thread)
+    if (REXISTS(environment->rw_txn_thread))
       rb_raise(cError, "A write transaction is already open on thread %p",
                (void *)environment->rw_txn_thread);
 
@@ -731,7 +745,7 @@ static VALUE with_transaction_2(VALUE venv, VALUE(*fn)(VALUE),
     // this is the thread the top-level read-write transaction is
     // on. the only place this should be nuked then is in
     // `transaction_finish`.
-    environment->rw_txn_thread = thread;
+    // environment->rw_txn_thread = thread;
   }
 
   if (txn_args.result != 0) {
@@ -744,11 +758,14 @@ static VALUE with_transaction_2(VALUE venv, VALUE(*fn)(VALUE),
   // we should have the transaction handle now, so set up the struct
 
   Transaction* transaction;
+  VALUE vtxn = TypedData_Make_Struct(cTransaction, Transaction,
+                                     &lmdb_transaction_type, transaction);
+
   transaction->env     = venv;
   transaction->thread  = thread;
   transaction->parent  = vparent;
-  transaction->cursors = rb_ary_new();
   transaction->child   = Qnil;
+  transaction->cursors = rb_ary_new();
 
   if (tparent && flags & MDB_RDONLY) {
     transaction->txn   = tparent->txn;
@@ -756,11 +773,11 @@ static VALUE with_transaction_2(VALUE venv, VALUE(*fn)(VALUE),
   }
   else {
     transaction->txn   = txn;
-    transaction->flags = flags | (flags & MDB_RDONLY ? MDB_TXN_PSEUDO : 0);
+    transaction->flags = flags; // | (flags & MDB_RDONLY ? MDB_TXN_PSEUDO : 0);
   }
 
-  VALUE vtxn = TypedData_Make_Struct(cTransaction, Transaction,
-                                     &lmdb_transaction_type, transaction);
+  // set parent's child to self
+  if (tparent) tparent->child = vtxn;
 
   // put the active transaction to me
 
@@ -776,20 +793,16 @@ static VALUE with_transaction_2(VALUE venv, VALUE(*fn)(VALUE),
 
   // CLEAN UP
 
-  // close all the cursors
-
-  // put the active transaction back to the parent
-
   if (exception) {
-    if (vtxn == environment_active_txn(venv)) {
-      exception == TAG_BREAK ?
-        transaction_commit(vtxn) : transaction_abort(vtxn);
-    }
+    if (vtxn == environment_active_txn(venv))
+      transaction_finish(vtxn, exception == TAG_BREAK);
+
     rb_jump_tag(exception);
   }
 
   //
   if (vtxn == environment_active_txn(venv)) transaction_commit(vtxn);
+  //else rb_warn("INTERNAL: wtf transaction?? %p %p", (void*)Qnil, (void*)environment_active_txn(venv));
 
   return ret;
 }
@@ -1080,7 +1093,7 @@ static VALUE environment_new(int argc, VALUE *argv, VALUE klass) {
   environment->env = env;
   environment->thread_txn_hash = rb_hash_new();
   environment->txn_thread_hash = rb_hash_new();
-  environment->rw_txn_thread   = (VALUE)NULL;
+  environment->rw_txn_thread   = Qnil;
 
   if (options.maxreaders > 0)
     check(mdb_env_set_maxreaders(env, options.maxreaders));
@@ -1219,10 +1232,10 @@ static void environment_set_active_txn(VALUE self, VALUE thread, VALUE txn) {
       rb_hash_delete(environment->txn_thread_hash, oldtxn);
 
       TRANSACTION(oldtxn, &lmdb_transaction_type, transaction);
-      if (!transaction->parent && !(transaction->flags & MDB_RDONLY)) {
-        if (environment->rw_txn_thread) {
+      if (NIL_P(transaction->parent) && !(transaction->flags & MDB_RDONLY)) {
+        if (REXISTS(environment->rw_txn_thread)) {
           if (environment->rw_txn_thread == thread)
-            environment->rw_txn_thread = (VALUE)NULL;
+            environment->rw_txn_thread = Qnil;
           else
             rb_raise(cError, "INTERNAL: rw_txn_thread %p != %p",
                      (void *)environment->rw_txn_thread, (void *)thread);
@@ -1241,8 +1254,8 @@ static void environment_set_active_txn(VALUE self, VALUE thread, VALUE txn) {
     rb_hash_aset(environment->thread_txn_hash, thread, txn);
 
     TRANSACTION(txn, &lmdb_transaction_type, transaction);
-    if (!transaction->parent && !(transaction->flags & MDB_RDONLY)) {
-      if (environment->rw_txn_thread) {
+    if (NIL_P(transaction->parent) && !(transaction->flags & MDB_RDONLY)) {
+      if (REXISTS(environment->rw_txn_thread)) {
         if (environment->rw_txn_thread == thread)
           rb_raise(cError, "INTERNAL: rw_txn_thread should be NULL");
         else rb_raise(cError, "Can't nest a transaction on another thread");

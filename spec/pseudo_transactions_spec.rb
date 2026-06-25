@@ -1,5 +1,4 @@
-# spec/pseudo_transaction_spec.rb
-
+require 'helper'
 require 'lmdb'
 require 'tmpdir'
 require 'fileutils'
