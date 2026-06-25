@@ -735,6 +735,9 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
         // if we get here it's because `rb_thread_call_without_gvl2`
         // caught an interrupt before running `call_txn_begin`
         mdb_txn_abort(txn);
+
+        txn = NULL; // XXX cargo cult: does that already set it to NULL?
+
         // this will cause the loop to terminate
         txn_args.result = 0;
       }
@@ -742,7 +745,7 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
       // do thread stuff
       rb_thread_check_ints();
       rb_thread_schedule();
-    } while (txn_args.result != 0 || !txn);
+    } while (!txn);
 
     // this is the thread the top-level read-write transaction is
     // on. the only place this should be nuked then is in
