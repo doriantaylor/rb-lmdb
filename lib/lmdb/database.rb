@@ -1,4 +1,22 @@
 module LMDB
+  class Environment
+
+    # Start a new transaction if there isn't already one going.
+    #
+    # @param readonly [false, true]
+    # @param block [Proc] the block to run
+    # @yieldparam [LMDB::Transaction] the transaction handle
+    # @yieldreturn [Object] your pick
+    # @return [Object] whatever the block returns
+    #
+    def transaction? readonly = false, &block
+      raise ArgumentError, 'no block for conditional transaction' unless block
+
+      t = active_txn
+      t ? block.call(t) : transaction(!!readonly, &block)
+    end
+  end
+
   class Database
     include Enumerable
 
@@ -10,9 +28,8 @@ module LMDB
     #      key, value = record
     #      puts "at #{key}: #{value}"
     #    end
-    def each
-      maybe_txn true do
-      # env.transaction do
+    def each &block
+      env.transaction? true do
         cursor do |c|
           while i = c.next
             yield(i)
@@ -55,12 +72,12 @@ module LMDB
     # @yield key [String] the next key in the database.
     # @return [Enumerator] in lieu of a block.
     def each_key(&block)
-      return enum_for :each_key unless block_given?
-      maybe_txn true do
-      #env.transaction do
+      return enum_for :each_key unless block
+
+      env.transaction? true do
         cursor do |c|
           while (rec = c.next true)
-            yield rec.first
+            block.call rec.first
           end
         end
       end
@@ -73,24 +90,25 @@ module LMDB
     # @yield value [String] the next value associated with the key.
     # @return [Enumerator] in lieu of a block.
     def each_value(key, &block)
-      return enum_for :each_value, key unless block_given?
+      return enum_for :each_value, key unless block
 
-      value = get(key) or return
-      unless dupsort?
-        yield value
-        return
-      end
+      op = -> txn do
+        value = get(key) or return
+        unless dupsort?
+          block.call value
+          return
+        end
 
-      maybe_txn true do
-      # env.transaction do
         cursor do |c|
           rec = c.set key
           while rec
-            yield rec.last
+            block.call rec.last
             rec = c.next_range key
           end
         end
       end
+
+      env.transaction? true, &op
     end
 
     # Return the cardinality (number of duplicates) of a given
@@ -99,8 +117,7 @@ module LMDB
     # @return [Integer] The number of entries under the key.
     def cardinality(key)
       ret = 0
-      maybe_txn true do
-      # env.transaction do
+      env.transaction? true do
         if get key
           if dupsort?
             cursor do |c|
@@ -118,18 +135,20 @@ module LMDB
     # Test if the database has a given key (or, if opened in
     # +:dupsort+, value)
     def has?(key, value = nil)
-      v = get(key) or return false
-      return true if value.nil? or value.to_s == v
-      return false unless dupsort?
+      env.transaction? true do
+        if v = get(key)
+          if value.nil? or value.to_s == v
+            true
+          elsif !dupsort?
+            false
+          else
+            ret = false
+            cursor { |c| ret = !!c.set(key, value) }
 
-      # warn "checking dupsort value `#{value.inspect}` (#{value.class})"
-
-      ret = false
-      # read-only txn was having trouble being nested inside a read-write
-      # maybe_txn(true) { cursor { |c| ret = !!c.set(key, value) } }
-      env.transaction(true) { cursor { |c| ret = !!c.set(key, value) } }
-
-      ret
+            ret
+          end
+        end
+      end
     end
 
     # Conditionally put a value into the database.
@@ -148,7 +167,7 @@ module LMDB
 
       flags = { (dupsort? ? :nodupdata : :nooverwrite) => true }
 
-      env.transaction do |txn|
+      env.transaction? do |txn|
         put(key, value, **options.merge(flags)) unless has?(key, value)
       end
     end
@@ -164,7 +183,7 @@ module LMDB
     # @return [void]
     #
     def delete?(key, value = nil)
-      env.transaction { |txn| delete(key, value) if has?(key, value) }
+      env.transaction? { |txn| delete(key, value) if has?(key, value) }
     end
 
     # Return how many records there are in this database.
@@ -178,27 +197,6 @@ module LMDB
     # @return whether the database is empty
     def empty?
       stat[:entries] == 0
-    end
-
-    private
-
-    # having trouble with read-only transactions embedded in
-    # read-write for some reason; can't pin it down to test it yet so
-    # going to do this (djt; 2020-02-10)
-    #
-    # 2025-11-14: this miiiigght no longer be necessary?? like as of
-    # whenever i implemented that short-circuiting code
-    #
-    def maybe_txn(readonly, &block)
-      if t = env.active_txn
-        # warn "reusing #{t.readonly? ? 'read-only ' : ''}txn #{t.inspect}"
-        yield t
-      else
-        env.transaction !!readonly do |t|
-          # warn "new #{t.readonly? ? 'read-only ' : ''}txn #{t.inspect}"
-          yield t
-        end
-      end
     end
   end
 end

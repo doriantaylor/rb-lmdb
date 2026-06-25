@@ -200,6 +200,16 @@ describe LMDB do
         end
         expect(env2).to eq(env)
       end
+
+      it 'should do conditional transactions' do
+        subject.transaction? true do |t1|
+          # note this second one is not readonly which would be
+          # illegal if it was opening a transaction for real
+          subject.transaction? do |t2|
+            expect(t2).to eq(t1)
+          end
+        end
+      end
     end
   end
 
