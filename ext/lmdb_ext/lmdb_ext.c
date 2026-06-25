@@ -220,11 +220,22 @@ static VALUE transaction_is_error(VALUE self) {
 #define MDB_TXN_PSEUDO 0x10  /* not a real txn; reusing parent */
 #endif
 
+static void clear_cursors(Transaction* transaction) {
+  long i;
+  for (i=0; i<RARRAY_LEN(transaction->cursors); i++) {
+    VALUE cursor = RARRAY_AREF(transaction->cursors, i);
+    cursor_close(cursor);
+  }
+  rb_ary_clear(transaction->cursors);
+}
+
 static void transaction_finish(VALUE self, int commit) {
   TRANSACTION(self, &lmdb_transaction_type, transaction);
 
   if (!transaction->txn)
     rb_raise(cError, "Transaction is already terminated");
+
+  int ret = 0;
 
   /* pseudo-transactions are transparent wrappers around a parent;
      commit/abort are no-ops since the parent owns the real txn */
@@ -232,80 +243,62 @@ static void transaction_finish(VALUE self, int commit) {
   if (transaction->flags & MDB_TXN_PSEUDO) {
     transaction->txn = NULL;
     transaction->flags |= 0x01; // MDB_TXN_FINISHED
-    environment_set_active_txn(transaction->env,
-                               transaction->thread,
-                               transaction->parent);
-    return;
+
+    // clear cursors
+    clear_cursors(transaction);
   }
+  else {
+    if (transaction->thread != rb_thread_current())
+      rb_raise(cError, "The thread closing the transaction "
+               "is not the one that opened it");
 
-  if (transaction->thread != rb_thread_current())
-    rb_raise(cError, "The thread closing the transaction "
-             "is not the one that opened it");
-
-  // ensure the transaction being closed is the active one
-  VALUE p = environment_active_txn(transaction->env);
-  while (!NIL_P(p) && p != self) {
-    TRANSACTION(p, &lmdb_transaction_type, txn);
-    p = txn->parent;
-  }
-  // bail out if the transaction `self` is not the active one
-  if (p != self)
-    rb_raise(cError, "Transaction is not active");
-
-  // now eliminate the cursors
-  long i;
-  for (i=0; i<RARRAY_LEN(transaction->cursors); i++) {
-    VALUE cursor = RARRAY_AREF(transaction->cursors, i);
-    cursor_close(cursor);
-  }
-  rb_ary_clear(transaction->cursors);
-
-  // now actually finish the internal transaction
-  int ret = 0;
-  if (transaction->flags & MDB_TXN_PSEUDO)
-    transaction->txn = NULL;
-  else if (commit)
-    ret = mdb_txn_commit(transaction->txn);
-  else
-    mdb_txn_abort(transaction->txn);
-
-  // indiscriminate
-  transaction->txn = NULL;
-
-  // eliminate child transactions
-  if (transaction->child && !NIL_P(transaction->child)) {
-    p = self; // again this is a VALUE
-    Transaction* txn = transaction; // and this is the struct
-
-    // descend into deepest child transaction
-    do {
-      p = txn->child;
-      // this is TRANSACTION minus the declaration
-      TypedData_Get_Struct(txn->child, Transaction,
-                           &lmdb_transaction_type, txn);
-    } while (txn->child && !NIL_P(txn->child));
-
-    // now we ascend back up
-    while (p != self) {
+    // ensure the transaction being closed is the active one
+    VALUE p = environment_active_txn(transaction->env);
+    while (!NIL_P(p) && p != self) {
       TRANSACTION(p, &lmdb_transaction_type, txn);
-      txn->txn = 0;
       p = txn->parent;
     }
+    // bail out if the transaction `self` is not the active one
+    if (p != self)
+      rb_raise(cError, "Transaction is not active");
+
+    // now eliminate the cursors
+    clear_cursors(transaction);
+
+    // now actually finish the internal transaction
+    if (commit)
+      ret = mdb_txn_commit(transaction->txn);
+    else
+      mdb_txn_abort(transaction->txn);
+
+    // eliminate child transactions
+    if (REXISTS(transaction->child)) {
+      p = self; // again this is a VALUE
+      Transaction* txn = transaction; // and this is the struct
+
+      // descend into deepest child transaction
+      do {
+        p = txn->child;
+        // this is TRANSACTION minus the declaration
+        TypedData_Get_Struct(txn->child, Transaction,
+                             &lmdb_transaction_type, txn);
+      } while (REXISTS(txn->child));
+
+      // now we ascend back up
+      while (p != self) {
+        TRANSACTION(p, &lmdb_transaction_type, txn);
+        txn->txn = 0;
+        p = txn->parent;
+      }
+    }
+    transaction->txn = 0;
   }
-  transaction->txn = 0;
 
   // clear the parent's child pointer now that we're done
   if (transaction->parent && !NIL_P(transaction->parent)) {
     TRANSACTION(transaction->parent, &lmdb_transaction_type, tpar);
     tpar->child = Qnil;
   }
-
-  // no more active read-write transaction; unset the registry
-  // if (!(transaction->flags & MDB_RDONLY) && !transaction->parent) {
-    //ENVIRONMENT(transaction->env, &lmdb_environment_type, env);
-    // maybe this should be Qnil, i dunno
-    //env->rw_txn_thread = (VALUE)NULL;
-  //}
 
   // now set the active transaction to the parent, if there is one
   environment_set_active_txn(transaction->env, transaction->thread,
@@ -1262,9 +1255,8 @@ static void environment_set_active_txn(VALUE self, VALUE thread, VALUE txn) {
     TRANSACTION(txn, &lmdb_transaction_type, transaction);
     if (!REXISTS(transaction->parent) && !(transaction->flags & MDB_RDONLY)) {
       if (REXISTS(environment->rw_txn_thread)) {
-        if (environment->rw_txn_thread == thread)
-          rb_raise(cError, "INTERNAL: rw_txn_thread should be nil");
-        else rb_raise(cError, "Can't nest a transaction on another thread");
+        if (environment->rw_txn_thread != thread)
+          rb_raise(cError, "Can't nest a transaction on another thread");
       }
 
       environment->rw_txn_thread = thread;
