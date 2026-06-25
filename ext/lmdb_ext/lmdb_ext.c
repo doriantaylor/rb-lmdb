@@ -395,14 +395,31 @@ static void *call_txn_begin(void *arg) {
                                      txn_args->flags, txn_args->htxn);
   }
   else if ((txn_args->flags & MDB_RDONLY) && txn_args->result == EAGAIN) {
-    int dead = 0;
-    check(mdb_reader_check(txn_args->env, &dead));
 
-    if (dead > 0)
-      rb_warn("LMDB: Cleared %d dead readers.", dead);
+    int tries = 100;
 
-    txn_args->result = mdb_txn_begin(txn_args->env, txn_args->parent,
-                                     txn_args->flags, txn_args->htxn);
+    struct timeval delay;
+    delay.tv_sec  = 0;
+    delay.tv_usec = 1000;
+
+    do {
+      int dead = 0;
+      check(mdb_reader_check(txn_args->env, &dead));
+
+      /*
+        if (dead > 0)
+        rb_warn("LMDB: Cleared %d dead readers.", dead);
+      */
+
+      if (dead == 0)
+        rb_thread_wait_for(delay);
+
+      txn_args->result = mdb_txn_begin(txn_args->env, txn_args->parent,
+                                       txn_args->flags, txn_args->htxn);
+      if (tries-- <= 0)
+        break;
+
+    } while (txn_args->result == EAGAIN);
   }
   else if (txn_args->result == EINVAL) {
     unsigned int envflags = 0;

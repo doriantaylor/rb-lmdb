@@ -220,7 +220,7 @@ describe LMDB do
       db2 = env.database 'db2', **dbopts
 
       # this should not crash
-      sym = env[:db1]
+      expect(env[:db1].size).to eq(0)
 
       main['key'] = '1'
       db1['key'] = '2'
