@@ -218,7 +218,7 @@ static VALUE transaction_is_error(VALUE self) {
 }
 
 #ifndef MDB_TXN_PSEUDO
-#define MDB_TXN_PSEUDO 0x10  /* not a real txn; reusing parent */
+#define MDB_TXN_PSEUDO 0x1000  /* not a real txn; reusing parent */
 #endif
 
 static void clear_cursors(Transaction* transaction) {
@@ -412,11 +412,11 @@ static void *call_txn_begin(void *arg) {
        which only returns the user-visible flags. we check it anyway
        as a diagnostic hint. */
     rb_warn("mdb_txn_begin EINVAL: env=%p parent=%p flags=%x "
-            "user_env_flags=%x",
+            "user_env_flags=%x code=%x",
             (void*)txn_args->env,
             (void*)txn_args->parent,
             txn_args->flags,
-            envflags);
+            envflags, txn_args->result);
   }
 
   return (void *)NULL;
@@ -524,6 +524,7 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
       rb_warn("open RO under RW");
     */
 
+    // if (!tparent || !(tparent->flags & MDB_RDONLY)) call_txn_begin(&txn_args);
     if (!tparent) call_txn_begin(&txn_args);
   }
   else if (tparent) {
@@ -604,7 +605,8 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
   transaction->child   = Qnil;
   transaction->cursors = rb_ary_new();
 
-  if (tparent && flags & MDB_RDONLY) {
+  // if ((flags & MDB_RDONLY) && tparent && (tparent->flags & MDB_RDONLY)) {
+  if (tparent && (flags & MDB_RDONLY)) {
     transaction->txn   = tparent->txn;
     transaction->flags = tparent->flags | MDB_TXN_PSEUDO;
   }
