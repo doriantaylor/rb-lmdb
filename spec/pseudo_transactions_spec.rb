@@ -15,13 +15,21 @@ RSpec.describe 'LMDB pseudo-transactions (RO nested inside RW)' do
     FileUtils.rm_rf path
   end
 
+  it 'should not have anything in the readers' do
+    expect(env.info[:numreaders]).to eq(0)
+    expect(env.reader_check).to eq(0)
+    expect(env.reader_list.first).to eq("(no active readers)\n")
+  end
+
   # -----------------------------------------------------------------------
   # The core bug: RO transaction nested inside RW must not abort the RW txn
   # when the RO block raises.
   # -----------------------------------------------------------------------
 
   it 'does not abort the outer RW transaction when the inner RO block raises' do
+
     # warn env.reader_list.inspect
+
     expect {
       env.transaction do
 
@@ -32,7 +40,7 @@ RSpec.describe 'LMDB pseudo-transactions (RO nested inside RW)' do
         # to produce EINVAL / "Invalid argument".
         begin
           env.transaction(true) do
-            warn env.reader_list.inspect
+            # warn env.reader_list.inspect
             raise 'deliberate error inside RO block'
           end
         rescue RuntimeError

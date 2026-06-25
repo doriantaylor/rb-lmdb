@@ -48,6 +48,10 @@
         TypedData_Get_Struct(var, Cursor, type, var_cur); \
         cursor_check(var_cur)
 
+#define CURSOR_NOCHECK(var, type, var_cur)               \
+        Cursor* var_cur;                                 \
+        TypedData_Get_Struct(var, Cursor, type, var_cur)
+
 /*
   hey yo if you can convince hyc to add a function like
   mdb_txn_get_flags or even mdb_txn_is_rdonly, you could probably get

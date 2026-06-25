@@ -49,7 +49,7 @@ static void transaction_free(void* ptr) {
       //rb_warn(sprintf("Memory leak: Garbage collecting active transaction %d", id));
       rb_warn("Memory leak: Garbage collecting active transaction");
       // transaction_abort(transaction);
-      mdb_txn_abort(transaction->txn);
+      // mdb_txn_abort(transaction->txn);
     }
     xfree(transaction);
   }
@@ -59,7 +59,8 @@ static void transaction_free(void* ptr) {
 static void transaction_mark(void* ptr) {
   Transaction *transaction = (Transaction *)ptr;
   if (transaction) {
-    GC_MARK(transaction->env);
+    //GC_MARK(transaction->env);
+    GC_MARK_MOVABLE(transaction->env);
     GC_MARK_MOVABLE(transaction->parent);
     GC_MARK_MOVABLE(transaction->child);
     GC_MARK_MOVABLE(transaction->thread);
@@ -324,6 +325,13 @@ static VALUE call_with_transaction_helper(VALUE arg) {
 
 static VALUE call_with_transaction(VALUE venv, VALUE self, const char* name,
                                    int argc, const VALUE* argv, int flags) {
+  /*
+  if (flags & MDB_RDONLY)
+    rb_warn("RO: calling `%s`", name);
+  else
+    rb_warn("RW: calling `%s`", name);
+  */
+
   HelperArgs arg = { self, name, argc, argv };
   return with_transaction(venv, call_with_transaction_helper, (VALUE)&arg, flags);
 }
@@ -396,6 +404,21 @@ static void *call_txn_begin(void *arg) {
     txn_args->result = mdb_txn_begin(txn_args->env, txn_args->parent,
                                      txn_args->flags, txn_args->htxn);
   }
+  else if (txn_args->result == EINVAL) {
+    unsigned int envflags = 0;
+    mdb_env_get_flags(txn_args->env, &envflags);
+    /* MDB_FATAL_ERROR is 0x80000000 in lmdb's internal me_flags —
+       note this is distinct from the flags returned by mdb_env_get_flags
+       which only returns the user-visible flags. we check it anyway
+       as a diagnostic hint. */
+    rb_warn("mdb_txn_begin EINVAL: env=%p parent=%p flags=%x "
+            "user_env_flags=%x",
+            (void*)txn_args->env,
+            (void*)txn_args->parent,
+            txn_args->flags,
+            envflags);
+  }
+
   return (void *)NULL;
 }
 
@@ -468,7 +491,7 @@ static void stop_txn_begin(void *arg)
  */
 
 static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
-                                VALUE arg, int flags) {
+                              VALUE arg, int flags) {
   ENVIRONMENT(venv, &lmdb_environment_type, environment);
 
   VALUE thread = rb_thread_current();
@@ -607,6 +630,10 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
 
   // CLEAN UP
 
+  // XXX very real possibility that the code in the block opens
+  // another transaction, although that transaction would be in
+  // another block, so it would be active
+
   if (exception) {
     if (vtxn == environment_active_txn(venv))
       transaction_finish(vtxn, exception == TAG_BREAK);
@@ -650,9 +677,14 @@ static void environment_free(void* ptr) {
 static void environment_mark(void *ptr) {
   Environment *environment = (Environment *)ptr;
   if (environment) {
+    /*
     GC_MARK(environment->thread_txn_hash);
     GC_MARK(environment->txn_thread_hash);
     GC_MARK(environment->rw_txn_thread);
+    */
+    GC_MARK_MOVABLE(environment->thread_txn_hash);
+    GC_MARK_MOVABLE(environment->txn_thread_hash);
+    GC_MARK_MOVABLE(environment->rw_txn_thread);
   }
 }
 
@@ -708,20 +740,29 @@ static VALUE environment_close(VALUE self) {
 }
 
 static int reader_list_callback(const char* msg, void* ctx) {
-  rb_ary_push((VALUE)ctx, rb_intern(msg));
-  //rb_warn("reader: %s", msg);
+  rb_ary_push((VALUE)ctx, rb_str_new2(msg));
+  // rb_warn("reader: %s", msg);
   return 0;
 }
 
 static VALUE environment_reader_list(VALUE self) {
-    ENVIRONMENT(self, &lmdb_environment_type, environment);
+  ENVIRONMENT(self, &lmdb_environment_type, environment);
 
-    VALUE ret = rb_ary_new();
+  VALUE ret = rb_ary_new();
 
-    mdb_reader_list(environment->env, reader_list_callback, (void*)ret);
+  mdb_reader_list(environment->env, reader_list_callback, (void*)ret);
 
-    //return Qnil;
-    return ret;
+  //return Qnil;
+  return ret;
+}
+
+static VALUE environment_reader_check(VALUE self) {
+  ENVIRONMENT(self, &lmdb_environment_type, environment);
+
+  int dead = 0;
+  mdb_reader_check(environment->env, &dead);
+
+  return INT2NUM(dead);
 }
 
 static VALUE stat2hash(const MDB_stat* stat) {
@@ -909,7 +950,8 @@ static VALUE environment_new(int argc, VALUE *argv, VALUE klass) {
 #endif
 
   EnvironmentOptions options = {
-    .flags = MDB_NOTLS,
+    // .flags = MDB_NOTLS,
+    .flags = 0,
     .maxreaders = -1,
     .maxdbs = 128,
     .mapsize = 0,
@@ -1441,10 +1483,13 @@ static VALUE database_get(VALUE self, VALUE vkey) {
   if (!active_txn(database->env))
     return call_with_transaction(database->env, self, "get", 1, &vkey, MDB_RDONLY);
 
+
   vkey = StringValue(vkey);
   MDB_val key, value;
   key.mv_size = RSTRING_LEN(vkey);
   key.mv_data = RSTRING_PTR(vkey);
+
+  // rb_warn("lol database get %s", (char *)key.mv_data);
 
   int ret = mdb_get(need_txn(database->env), database->dbi, &key, &value);
   if (ret == MDB_NOTFOUND)
@@ -1618,9 +1663,11 @@ static void cursor_mark(Cursor* cursor) {
  *  Close a cursor.  The cursor must not be used again after this call.
  */
 static VALUE cursor_close(VALUE self) {
-  CURSOR(self, &lmdb_cursor_type, cursor);
-  mdb_cursor_close(cursor->cur);
-  cursor->cur = 0;
+  CURSOR_NOCHECK(self, &lmdb_cursor_type, cursor);
+  if (cursor->cur) {
+    mdb_cursor_close(cursor->cur);
+    cursor->cur = 0;
+  }
   return Qnil;
 }
 
@@ -2086,6 +2133,7 @@ void Init_lmdb_ext() {
   rb_define_method(cEnvironment, "path", environment_path, 0);
   rb_define_method(cEnvironment, "transaction", environment_transaction, -1);
   rb_define_method(cEnvironment, "reader_list", environment_reader_list, 0);
+  rb_define_method(cEnvironment, "reader_check", environment_reader_check, 0);
   /*
     #ifdef HAVE_RB_GC_MARK_MOVABLE
     rb_define_method(cEnvironment, "rb_gc_compact", environment_compact_m, 0);
