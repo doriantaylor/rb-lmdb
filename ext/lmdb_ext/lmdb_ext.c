@@ -1268,7 +1268,7 @@ static void database_mark(void* ptr) {
  *   database aborts, the database is not created.
  *   @return [Database] newly-opened database
  *   @raise [Error] if there is an error opening the database
- *   @param [String] name Optional name for the database to be opened.
+ *   @param [String, Symbol, nil] name Optional name for the database to be opened.
  *   @param [Hash] options Options for the database.
  *   @option options [Boolean] :reversekey Keys are strings to be
  *       compared in reverse order, from the end of the strings to the
@@ -1296,16 +1296,15 @@ static void database_mark(void* ptr) {
  */
 static VALUE environment_database(int argc, VALUE *argv, VALUE self) {
   ENVIRONMENT(self, &lmdb_environment_type, environment);
+
   if (!active_txn(self))
     return call_with_transaction(self, self, "database", argc, argv, 0);
 
-  VALUE name, option_hash;
-#ifdef RB_SCAN_ARGS_KEYWORDS
-  rb_scan_args_kw(RB_SCAN_ARGS_KEYWORDS,
+  VALUE name        = Qnil;
+  VALUE option_hash = Qnil;
+
+  rb_scan_args_kw(RB_SCAN_ARGS_LAST_HASH_KEYWORDS,
                   argc, argv, "01:", &name, &option_hash);
-#else
-  rb_scan_args(argc, argv, "01:", &name, &option_hash);
-#endif
 
   int flags = 0;
   if (!NIL_P(option_hash))
@@ -1313,6 +1312,14 @@ static VALUE environment_database(int argc, VALUE *argv, VALUE self) {
                     (VALUE)&flags);
 
   MDB_dbi dbi;
+
+  if (name && !NIL_P(name)) {
+    if (RB_TYPE_P(name, T_SYMBOL))
+      name = rb_sym2str(name);
+
+    Check_Type(name, T_STRING);
+  }
+
   check(mdb_dbi_open(need_txn(self), NIL_P(name) ? 0 : StringValueCStr(name),
                      flags, &dbi));
 
@@ -1323,6 +1330,29 @@ static VALUE environment_database(int argc, VALUE *argv, VALUE self) {
   database->env = self;
 
   return vdb;
+}
+
+/**
+ * @overload []()
+ *   Accesses an existing database. Will raise if it doesn't exist.
+ *
+ * @param name [String, Symbol, nil] name for the database to be opened.
+ *
+ * @raise [Error] if there is an error opening the database
+ *
+ * @return [Database] a database handle
+ */
+
+static VALUE environment_database_aref(VALUE self, VALUE name) {
+  // If they pass nil explicitly, treat it as zero arguments (anonymous database)
+  int argc = NIL_P(name) ? 0 : 1;
+
+  // Package it up into an argv array
+  VALUE argv[1];
+  argv[0] = name;
+
+  // Call your existing function directly
+  return environment_database(argc, argv, self);
 }
 
 /**
@@ -2120,8 +2150,9 @@ void Init_lmdb_ext() {
   cEnvironment = rb_define_class_under(mLMDB, "Environment", rb_cObject);
   rb_undef_alloc_func(cEnvironment);
   rb_define_singleton_method(cEnvironment, "new", environment_new, -1);
-  rb_define_method(cEnvironment, "database", environment_database, -1);
   rb_define_method(cEnvironment, "databases", environment_databases, 0);
+  rb_define_method(cEnvironment, "database", environment_database, -1);
+  rb_define_method(cEnvironment, "[]", environment_database_aref, 1);
   rb_define_method(cEnvironment, "active_txn", environment_active_txn, 0);
   rb_define_method(cEnvironment, "close", environment_close, 0);
   rb_define_method(cEnvironment, "stat", environment_stat, 0);

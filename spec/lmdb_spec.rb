@@ -219,6 +219,9 @@ describe LMDB do
       db1 = env.database 'db1', create: true # actually no it doesn't wtf
       db2 = env.database 'db2', **dbopts
 
+      # this should not crash
+      sym = env[:db1]
+
       main['key'] = '1'
       db1['key'] = '2'
       db2['key'] = '3'
