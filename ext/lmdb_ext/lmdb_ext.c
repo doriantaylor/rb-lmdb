@@ -697,7 +697,7 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
 
     // writable transaction thread must match current thread
     if (!REXISTS(environment->rw_txn_thread))
-      rb_raise(cError, "INTERNAL: rw_txn_thread should not be NULL");
+      rb_raise(cError, "INTERNAL: rw_txn_thread should be non-nil");
 
     // what it says, lol
     if (tparent->thread != thread || environment->rw_txn_thread != thread)
@@ -1232,7 +1232,7 @@ static void environment_set_active_txn(VALUE self, VALUE thread, VALUE txn) {
       rb_hash_delete(environment->txn_thread_hash, oldtxn);
 
       TRANSACTION(oldtxn, &lmdb_transaction_type, transaction);
-      if (NIL_P(transaction->parent) && !(transaction->flags & MDB_RDONLY)) {
+      if (!REXISTS(transaction->parent) && !(transaction->flags & MDB_RDONLY)) {
         if (REXISTS(environment->rw_txn_thread)) {
           if (environment->rw_txn_thread == thread)
             environment->rw_txn_thread = Qnil;
@@ -1254,10 +1254,10 @@ static void environment_set_active_txn(VALUE self, VALUE thread, VALUE txn) {
     rb_hash_aset(environment->thread_txn_hash, thread, txn);
 
     TRANSACTION(txn, &lmdb_transaction_type, transaction);
-    if (NIL_P(transaction->parent) && !(transaction->flags & MDB_RDONLY)) {
+    if (!REXISTS(transaction->parent) && !(transaction->flags & MDB_RDONLY)) {
       if (REXISTS(environment->rw_txn_thread)) {
         if (environment->rw_txn_thread == thread)
-          rb_raise(cError, "INTERNAL: rw_txn_thread should be NULL");
+          rb_raise(cError, "INTERNAL: rw_txn_thread should be nil");
         else rb_raise(cError, "Can't nest a transaction on another thread");
       }
 
