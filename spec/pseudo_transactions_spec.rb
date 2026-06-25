@@ -21,8 +21,10 @@ RSpec.describe 'LMDB pseudo-transactions (RO nested inside RW)' do
   # -----------------------------------------------------------------------
 
   it 'does not abort the outer RW transaction when the inner RO block raises' do
+    # warn env.reader_list.inspect
     expect {
       env.transaction do
+
         db['key'] = 'value'
 
         # This inner RO transaction raises. Before the fix this silently
@@ -30,6 +32,7 @@ RSpec.describe 'LMDB pseudo-transactions (RO nested inside RW)' do
         # to produce EINVAL / "Invalid argument".
         begin
           env.transaction(true) do
+            warn env.reader_list.inspect
             raise 'deliberate error inside RO block'
           end
         rescue RuntimeError

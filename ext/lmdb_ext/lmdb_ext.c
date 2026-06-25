@@ -271,6 +271,8 @@ static void transaction_finish(VALUE self, int commit) {
     else
       mdb_txn_abort(transaction->txn);
 
+    check(ret);
+
     // eliminate child transactions
     if (REXISTS(transaction->child)) {
       p = self; // again this is a VALUE
@@ -295,7 +297,7 @@ static void transaction_finish(VALUE self, int commit) {
   }
 
   // clear the parent's child pointer now that we're done
-  if (transaction->parent && !NIL_P(transaction->parent)) {
+  if (REXISTS(transaction->parent)) {
     TRANSACTION(transaction->parent, &lmdb_transaction_type, tpar);
     tpar->child = Qnil;
   }
@@ -311,8 +313,22 @@ static void transaction_finish(VALUE self, int commit) {
   transaction->thread  = Qnil;
   transaction->cursors = Qnil;
 
-  check(ret);
 }
+
+// original helpers
+
+static VALUE call_with_transaction_helper(VALUE arg) {
+  HelperArgs* a = (HelperArgs*)arg;
+  return rb_funcall_passing_block(a->self, rb_intern(a->name), a->argc, a->argv);
+}
+
+static VALUE call_with_transaction(VALUE venv, VALUE self, const char* name,
+                                   int argc, const VALUE* argv, int flags) {
+  HelperArgs arg = { self, name, argc, argv };
+  return with_transaction(venv, call_with_transaction_helper, (VALUE)&arg, flags);
+}
+
+/*
 
 // these two are from gemini
 
@@ -357,6 +373,7 @@ static VALUE call_with_transaction(VALUE venv, VALUE self, const char* name,
 
   return result;
 }
+*/
 
 // and now your regularly scheduled program
 
@@ -369,7 +386,7 @@ static void *call_txn_begin(void *arg) {
     txn_args->result = mdb_txn_begin(txn_args->env, txn_args->parent,
                                      txn_args->flags, txn_args->htxn);
   }
-  else if (txn_args->flags & MDB_RDONLY && txn_args->result == EAGAIN) {
+  else if ((txn_args->flags & MDB_RDONLY) && txn_args->result == EAGAIN) {
     int dead = 0;
     check(mdb_reader_check(txn_args->env, &dead));
 
@@ -660,6 +677,7 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
   VALUE thread = rb_thread_current();
 
   // ATTEMPT TO OBTAIN PARENT TRANSACTION (which may be a pseudo)
+
   VALUE vparent        = environment_active_txn(venv);
   Transaction* tparent = NULL;
   if (REXISTS(vparent))
@@ -667,8 +685,6 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
 
   // (parent transaction will necessarily be on the same thread by
   // dint of how it is looked up)
-
-  // if parent exists we create a sub-transaction (which may also be a pseudo)
 
   // ACQUIRE THE TRANSACTION FROM LMDB
 
@@ -683,9 +699,19 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
   txn_args.stop   = 0;
 
   if (flags & MDB_RDONLY) {
+    /*
+    if (tparent && !(tparent->flags & MDB_RDONLY))
+      rb_warn("open RO under RW");
+    */
+
     if (!tparent) call_txn_begin(&txn_args);
   }
   else if (tparent) {
+    /*
+    if (!(tparent->flags & MDB_RDONLY))
+      rb_warn("open RW under RW");
+    */
+
     // can't put a writable transaction under a read-only one
     if (tparent->flags & MDB_RDONLY)
       rb_raise(cError, "Can't open an RW transaction under an RO");
@@ -729,9 +755,7 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
         // caught an interrupt before running `call_txn_begin`
         mdb_txn_abort(txn);
 
-        txn = NULL; // XXX cargo cult: does that already set it to NULL?
-
-        // this will cause the loop to terminate
+        txn = NULL;
         txn_args.result = 0;
       }
 
@@ -739,11 +763,6 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
       rb_thread_check_ints();
       rb_thread_schedule();
     } while (!txn);
-
-    // this is the thread the top-level read-write transaction is
-    // on. the only place this should be nuked then is in
-    // `transaction_finish`.
-    // environment->rw_txn_thread = thread;
   }
 
   if (txn_args.result != 0) {
@@ -781,7 +800,6 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
 
   environment_set_active_txn(venv, thread, vtxn);
 
-
   // ACTUALLY EXECUTE THE TRANSACTION BODY
 
   int exception = 0;
@@ -801,7 +819,6 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
 
   // commit if it hasn't already been explicitly done
   if (vtxn == environment_active_txn(venv)) transaction_commit(vtxn);
-  //else rb_warn("INTERNAL: wtf transaction?? %p %p", (void*)Qnil, (void*)environment_active_txn(venv));
 
   return ret;
 }
@@ -820,8 +837,13 @@ static void environment_free(void* ptr) {
       // stack, so it will not be collected, so environment_free
       // should not be called.
       rb_warn("Bug: closing environment with open transactions.");
+
+      rb_hash_clear(environment->txn_thread_hash);
+      rb_hash_clear(environment->thread_txn_hash);
+      environment->rw_txn_thread = Qnil;
     }
     mdb_env_close(environment->env);
+    environment->env = NULL;
   }
   xfree(environment);
 }
@@ -886,6 +908,23 @@ static VALUE environment_close(VALUE self) {
   mdb_env_close(environment->env);
   environment->env = 0;
   return Qnil;
+}
+
+static int reader_list_callback(const char* msg, void* ctx) {
+  rb_ary_push((VALUE)ctx, rb_intern(msg));
+  //rb_warn("reader: %s", msg);
+  return 0;
+}
+
+static VALUE environment_reader_list(VALUE self) {
+    ENVIRONMENT(self, &lmdb_environment_type, environment);
+
+    VALUE ret = rb_ary_new();
+
+    mdb_reader_list(environment->env, reader_list_callback, (void*)ret);
+
+    //return Qnil;
+    return ret;
 }
 
 static VALUE stat2hash(const MDB_stat* stat) {
@@ -1226,7 +1265,7 @@ static void environment_set_active_txn(VALUE self, VALUE thread, VALUE txn) {
 
   if (NIL_P(txn)) {
     // we are clearing out whatever is there
-    if (!NIL_P(oldtxn)) {
+    if (REXISTS(oldtxn)) {
       rb_hash_delete(environment->thread_txn_hash, thread);
       rb_hash_delete(environment->txn_thread_hash, oldtxn);
 
@@ -1245,10 +1284,9 @@ static void environment_set_active_txn(VALUE self, VALUE thread, VALUE txn) {
   } else {
     // we are setting/replacing the thread's current transaction
 
-    if (!NIL_P(oldtxn)) {
-      // eliminate the backreference
+    if (REXISTS(oldtxn))
       rb_hash_delete(environment->txn_thread_hash, oldtxn);
-    }
+
     rb_hash_aset(environment->txn_thread_hash, txn, thread);
     rb_hash_aset(environment->thread_txn_hash, thread, txn);
 
@@ -2250,6 +2288,7 @@ void Init_lmdb_ext() {
   rb_define_method(cEnvironment, "flags", environment_flags, 0);
   rb_define_method(cEnvironment, "path", environment_path, 0);
   rb_define_method(cEnvironment, "transaction", environment_transaction, -1);
+  rb_define_method(cEnvironment, "reader_list", environment_reader_list, 0);
   /*
     #ifdef HAVE_RB_GC_MARK_MOVABLE
     rb_define_method(cEnvironment, "rb_gc_compact", environment_compact_m, 0);
