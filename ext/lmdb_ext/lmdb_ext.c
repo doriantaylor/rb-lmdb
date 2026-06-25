@@ -228,14 +228,15 @@ static void transaction_finish(VALUE self, int commit) {
 
   /* pseudo-transactions are transparent wrappers around a parent;
      commit/abort are no-ops since the parent owns the real txn */
-  /*
+
   if (transaction->flags & MDB_TXN_PSEUDO) {
     transaction->txn = NULL;
+    transaction->flags |= 0x01; // MDB_TXN_FINISHED
     environment_set_active_txn(transaction->env,
                                transaction->thread,
                                transaction->parent);
     return;
-    }*/
+  }
 
   if (transaction->thread != rb_thread_current())
     rb_raise(cError, "The thread closing the transaction "
@@ -668,7 +669,7 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
   // ATTEMPT TO OBTAIN PARENT TRANSACTION (which may be a pseudo)
   VALUE vparent        = environment_active_txn(venv);
   Transaction* tparent = NULL;
-  if (vparent && !NIL_P(vparent))
+  if (REXISTS(vparent))
     TypedData_Get_Struct(vparent, Transaction, &lmdb_transaction_type, tparent);
 
   // (parent transaction will necessarily be on the same thread by
@@ -688,8 +689,9 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
   txn_args.result = 0;
   txn_args.stop   = 0;
 
-  if (flags & MDB_RDONLY)
-    call_txn_begin(&txn_args);
+  if (flags & MDB_RDONLY) {
+    if (!tparent) call_txn_begin(&txn_args);
+  }
   else if (tparent) {
     // can't put a writable transaction under a read-only one
     if (tparent->flags & MDB_RDONLY)
@@ -783,6 +785,7 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
 
   environment_set_active_txn(venv, thread, vtxn);
 
+
   // ACTUALLY EXECUTE THE TRANSACTION BODY
 
   int exception = 0;
@@ -800,7 +803,7 @@ static VALUE with_transaction(VALUE venv, VALUE(*fn)(VALUE),
     rb_jump_tag(exception);
   }
 
-  //
+  // commit if it hasn't already been explicitly done
   if (vtxn == environment_active_txn(venv)) transaction_commit(vtxn);
   //else rb_warn("INTERNAL: wtf transaction?? %p %p", (void*)Qnil, (void*)environment_active_txn(venv));
 
