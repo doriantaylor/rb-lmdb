@@ -147,6 +147,8 @@ module LMDB
 
             ret
           end
+        else
+          false
         end
       end
     end
